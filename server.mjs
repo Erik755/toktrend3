@@ -43,7 +43,6 @@ function generatePKCE() {
 }
 
 const TIKTOK_TOKEN_FILE = join(__dirname, 'tiktok_token.json');
-
 function readToken() {
   if (process.env.TIKTOK_TOKEN_JSON) {
     try { return JSON.parse(process.env.TIKTOK_TOKEN_JSON); } catch { return null; }
