@@ -27,12 +27,14 @@
   .notice{border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.08);color:#fde68a;font-size:15px}
   .notice.connected{border-color:rgba(16,185,129,.35);background:rgba(16,185,129,.08);color:#6ee7b7}
   .row{display:flex;gap:14px;align-items:center;justify-content:space-between}
-  .switch{width:64px;height:36px;border-radius:99px;background:linear-gradient(90deg,var(--cyan),var(--violet));position:relative;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18);cursor:pointer}
+  .switch{width:74px;height:40px;border-radius:99px;background:linear-gradient(90deg,var(--cyan),var(--violet),var(--pink));position:relative;box-shadow:0 0 22px rgba(6,182,212,.25),inset 0 0 0 1px rgba(255,255,255,.18);cursor:pointer;transition:.2s}
   .switch:after{content:"";position:absolute;width:30px;height:30px;border-radius:50%;background:white;right:3px;top:3px}
-  .switch.off{background:#3f3f46}.switch.off:after{right:31px}
-  .btns{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}
+  .switch.off{background:#3f3f46;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.switch.off:after{right:41px}
+  .switchLabel{margin-top:8px;color:#67e8f9;font-weight:800;font-size:13px;text-align:center}
+  .switch.off + .switchLabel{color:#a1a1aa}
+  .btns{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:18px 0}
   .btn,button{border:1px solid rgba(255,255,255,.12);background:#151520;color:#e4e4e7;border-radius:14px;padding:12px 16px;font-weight:700;cursor:pointer;transition:.18s;font-size:15px}
-  .btn.active,button.primary{background:linear-gradient(90deg,var(--cyan),var(--violet),var(--pink));border-color:transparent;color:white;box-shadow:0 0 24px rgba(114,19,255,.28)}
+  .btn.active,button.active,button.primary{background:linear-gradient(90deg,var(--cyan),var(--violet),var(--pink));border-color:transparent;color:white;box-shadow:0 0 24px rgba(114,19,255,.28)}
   button:hover,.btn:hover{transform:translateY(-1px);border-color:rgba(255,255,255,.24)}
   button:disabled{opacity:.45;cursor:not-allowed;transform:none}
   .tags{display:flex;flex-wrap:wrap;gap:10px}
@@ -68,15 +70,6 @@
   .trend{display:grid;grid-template-columns:1fr auto;gap:8px;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:12px;background:rgba(255,255,255,.045);margin-top:10px}
   .trend strong{display:block;font-size:14px}.trend span{color:#a1a1aa;font-size:12px}
   .score{color:#67e8f9;font-weight:900}
-  .metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
-  .metric{padding:14px;border-radius:16px;background:#0e0e16;border:1px solid rgba(255,255,255,.08)}
-  .metric b{font-size:24px;display:block}.metric span{color:var(--muted);font-size:12px}
-  .logs{height:220px;overflow:auto;background:#07070c;border:1px solid #252535;border-radius:15px;padding:10px;font-family:ui-monospace,Menlo,Consolas,monospace;color:#a7f3d0;font-size:12px}
-  .logs div{margin-bottom:7px}
-  .log-err{color:#fb7185 !important}
-  .log-ok{color:#34d399 !important}
-  .log-info{color:#93c5fd !important}
-  .tabbar{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:14px}
   .small{font-size:13px;color:#a1a1aa}
   .progress{height:7px;border-radius:99px;background:#252535;overflow:hidden;margin-top:8px}
   .progress i{display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--cyan),var(--pink));border-radius:99px;transition:width .4s ease}
@@ -99,7 +92,7 @@
   .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.2);border-top-color:#06b6d4;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
   @keyframes spin{to{transform:rotate(360deg)}}
   @media(max-width:1050px){main{grid-template-columns:1fr 1fr}.right{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:20px}}
-  @media(max-width:760px){header{align-items:flex-start;flex-direction:column}main,.right{display:block}.card{margin-bottom:16px}.phone{width:440px;max-width:100%}.metrics{grid-template-columns:1fr}}
+  @media(max-width:760px){header{align-items:flex-start;flex-direction:column}main,.right{display:block}.card{margin-bottom:16px}.phone{width:440px;max-width:100%}.btns{grid-template-columns:repeat(3,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -114,7 +107,6 @@
     </div>
   </div>
   <div class="status">
-    <span class="pill loading" id="healthPill">⏳ Conectando backend…</span>
     <span class="pill" id="modelPill" style="display:none">Modelo: —</span>
     <button class="pill" id="tiktokBtn" onclick="window.open('/api/tiktok/login', '_blank', 'width=500,height=600')" style="cursor:pointer; background:rgba(232,121,249,0.15); border-color:rgba(232,121,249,0.4); color:#e879f9; font-size:14px; padding:10px 16px;">🎵 Conectar TikTok</button>
   </div>
@@ -123,25 +115,24 @@
 <main>
   <!-- LEFT: controles -->
   <section class="left">
-    <div class="card notice" id="noticeBanner">
-      <b>⚡ Backend local activo</b>
-      <p style="margin:4px 0 0">Conectado a <code>localhost:8787</code> · Generación de obras artísticas</p>
-    </div>
-
-    <div class="card" style="margin-top:16px">
+    <div class="card">
       <div class="row">
         <div>
           <h2>Modo autónomo</h2>
           <p>Analiza tendencias, crea guiones, renderiza storyboard y prepara publicaciones.</p>
         </div>
-        <div id="sw" class="switch off"></div>
+        <div>
+          <div id="sw" class="switch off" role="switch" aria-checked="false" tabindex="0"></div>
+          <div id="swLabel" class="switchLabel">Pausado</div>
+        </div>
       </div>
       <div class="small">Intervalo de publicación estimada</div>
       <div class="btns" id="intervals">
-        <button class="active">1h</button>
-        <button>2h</button>
-        <button>4h</button>
-        <button>24h</button>
+        <button class="active" data-minutes="15">15 min</button>
+        <button data-minutes="60">1h</button>
+        <button data-minutes="120">2h</button>
+        <button data-minutes="240">4h</button>
+        <button data-minutes="1440">24h</button>
       </div>
       <div class="small">Nichos seleccionados</div>
       <div class="tags" id="tags">
@@ -195,15 +186,9 @@
     </div>
   </section>
 
-  <!-- RIGHT: trends + logs -->
+  <!-- RIGHT: trends -->
   <section class="right">
     <div class="card">
-      <div class="tabbar">
-        <button class="active" data-tab="trends">Trends</button>
-        <button data-tab="analytics">Analytics</button>
-        <button data-tab="logs">Logs</button>
-      </div>
-
       <div id="trends" class="tab">
         <h2>Tendencias detectadas</h2>
         <div class="trend"><div><strong>#HistoriaOculta</strong><span>Misterios y micro-documentales</span></div><div class="score">94</div></div>
@@ -212,27 +197,13 @@
         <div class="trend"><div><strong>#TechTok</strong><span>Novedades y explicación simple</span></div><div class="score">84</div></div>
       </div>
 
-      <div id="analytics" class="tab hidden">
-        <h2>Métricas estimadas</h2>
-        <div class="metrics">
-          <div class="metric"><b>1.2M</b><span>Alcance total</span></div>
-          <div class="metric"><b>84.2K</b><span>Me gusta</span></div>
-          <div class="metric"><b>7.8%</b><span>Engagement</span></div>
-          <div class="metric"><b id="vidCount">0</b><span>Videos generados</span></div>
-        </div>
-      </div>
-
-      <div id="logs" class="tab hidden">
-        <h2>Consola del agente</h2>
-        <div class="logs" id="logbox"></div>
-      </div>
     </div>
 
     <div class="card" style="margin-top:16px">
       <h3>Estado del agente</h3>
       <p id="task">Esperando instrucciones…</p>
       <div class="progress"><i id="taskProg" style="width:0%"></i></div>
-      <p class="small" style="margin-top:12px" id="taskSub">Backend conectado en localhost:8787</p>
+      <p class="small" style="margin-top:12px" id="taskSub">Listo para crear contenido</p>
     </div>
   </section>
 </main>
@@ -249,16 +220,7 @@ let alt = false;
 let playing = false;
 
 function log(msg, type = '') {
-  const box = $('#logbox');
-  if (!box) return;
-  const ts = new Date().toLocaleTimeString('es-ES', {hour12: false});
-  const div = document.createElement('div');
-  div.className = type ? `log-${type}` : '';
-  div.textContent = `[${ts}] ${msg}`;
-  box.prepend(div);
-  // switch to logs tab
-  const logsBtn = $$('[data-tab]').find(x => x.dataset.tab === 'logs');
-  if (type === 'err') logsBtn?.click();
+  console[type === 'err' ? 'error' : 'log'](msg);
 }
 
 function setTask(text, pct = null) {
@@ -272,12 +234,9 @@ async function checkHealth() {
     const r = await fetch(`${BACKEND}/health`);
     const d = await r.json();
     if (d.ok) {
-      $('#healthPill').textContent = '● Backend OK';
-      $('#healthPill').className = 'pill ok';
-      $('#modelPill').textContent = 'OpenAI · Sora';
-      $('#noticeBanner').classList.add('connected');
-      $('#noticeBanner').querySelector('b').textContent = '✅ Backend conectado';
-      log('Backend localhost:8787 conectado correctamente', 'ok');
+      const modelPill = $('#modelPill');
+      if (modelPill) modelPill.textContent = 'OpenAI · Sora';
+      log('Servicio listo para crear contenido', 'ok');
     }
     
     // Check TikTok status
@@ -289,9 +248,7 @@ async function checkHealth() {
       $('#tiktokBtn').onclick = null;
     }
   } catch(e) {
-    $('#healthPill').textContent = '✗ Backend offline';
-    $('#healthPill').className = 'pill err';
-    log('No se puede conectar con localhost:8787', 'err');
+    log('No se puede conectar con el servicio de creación', 'err');
   }
 }
 
@@ -323,7 +280,7 @@ $('#gen').onclick = async () => {
     setTask('Obra de arte y diapositivas cargadas ✓', 100);
     log(`Obra "${d.artwork.title}" de ${d.artwork.artist} cargada`, 'ok');
     videoCount++;
-    $('#vidCount').textContent = videoCount;
+    if ($('#vidCount')) $('#vidCount').textContent = videoCount;
 
     // Iniciar la reproducción del slideshow de forma automática
     startSlideshow();
@@ -366,7 +323,7 @@ function playSlide() {
   // Actualizar el subtítulo/descripción con lo que trata la escena actual
   $('#vcap').textContent = slide.description;
   
-  // Resaltar en los logs la escena actual
+  // Registrar la escena actual para diagnóstico.
   log(`Escena ${currentSlideIndex + 1}/4: ${slide.description.slice(0, 50)}...`, 'info');
 }
 
@@ -374,6 +331,9 @@ function displayPlan(artwork, slides) {
   const shots = slides.map((s, idx) =>
     `<div class="plan-shot">⬥ <b>Foto ${idx + 1} (4s)</b> — ${s.description}</div>`
   ).join('');
+  const hashtags = (artwork.hashtags?.length ? artwork.hashtags : ['#TokTrend', '#Arte', '#HistoriaDelArte', '#Cultura'])
+    .map(tag => `<span>${tag}</span>`)
+    .join('');
 
   $('#planBox').innerHTML = `
     <div class="plan-title">🎨 ${artwork.title}</div>
@@ -381,7 +341,8 @@ function displayPlan(artwork, slides) {
     <div class="plan-narr">⏱️ Duración total: ${artwork.totalDuration}s (3 fotos x 4s)</div>
     ${shots}
     ${artwork.narration ? `<div style="margin-top:10px;padding:10px;background:rgba(6,182,212,.07);border-radius:10px;border-left:3px solid var(--cyan);color:#e4e4e7;font-size:13px;line-height:1.6">🗣️ <b>Narración IA:</b><br>${artwork.narration}</div>` : ''}
-    <div class="plan-tags"><span>#Arte</span><span>#Historia</span><span>#Cultura</span></div>
+    ${artwork.description ? `<div style="margin-top:10px;color:#d4d4d8;font-size:13px;line-height:1.6"><b>Descripción:</b> ${artwork.description}</div>` : ''}
+    <div class="plan-tags">${hashtags}</div>
   `;
   $('#planBox').classList.remove('hidden');
 
@@ -398,25 +359,30 @@ function displayPlan(artwork, slides) {
 // UI events
 $('#sw').onclick = e => {
   e.currentTarget.classList.toggle('off');
-  log(e.currentTarget.classList.contains('off') ? 'Agente autónomo pausado.' : 'Agente autónomo reactivado.');
+  const enabled = !e.currentTarget.classList.contains('off');
+  e.currentTarget.setAttribute('aria-checked', String(enabled));
+  $('#swLabel').textContent = enabled ? 'Activo' : 'Pausado';
+  setTask(enabled ? 'Modo autónomo activo' : 'Modo autónomo pausado', enabled ? 18 : 0);
+  log(enabled ? 'Agente autónomo reactivado.' : 'Agente autónomo pausado.');
+};
+
+$('#sw').onkeydown = e => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    e.currentTarget.click();
+  }
 };
 
 $$('#intervals button').forEach(b => b.onclick = () => {
   $$('#intervals button').forEach(x => x.classList.remove('active'));
   b.classList.add('active');
+  setTask('Timer seleccionado: ' + b.textContent, 12);
   log('Intervalo de publicación cambiado a ' + b.textContent);
 });
 
 $$('.tag').forEach(t => t.onclick = () => {
   t.classList.toggle('active');
   log('Nicho actualizado: ' + t.textContent);
-});
-
-$$('[data-tab]').forEach(b => b.onclick = () => {
-  $$('[data-tab]').forEach(x => x.classList.remove('active'));
-  b.classList.add('active');
-  $$('.tab').forEach(x => x.classList.add('hidden'));
-  $('#' + b.dataset.tab).classList.remove('hidden');
 });
 
 $('#img').onclick = () => {
@@ -437,7 +403,7 @@ $('#pub').onclick = async () => {
   
   try {
     const title = currentPlan.title.slice(0, 80);
-    const description = `Descubre "${currentPlan.title}", una gran obra de ${currentPlan.artist}. Creado y publicado automáticamente con #TokTrend #Arte #Cultura #Historia`;
+    const description = currentPlan.description || `Descubre "${currentPlan.title}", una gran obra de ${currentPlan.artist}. Comenta qué detalle te atrapó primero. #TokTrend #Arte #HistoriaDelArte #Cultura #Museo`;
 
     const r = await fetch(`${BACKEND}/api/art/publish`, {
       method: 'POST',

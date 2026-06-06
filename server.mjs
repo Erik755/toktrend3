@@ -30,7 +30,7 @@ try {
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json({ limit: '2mb' }));
@@ -160,7 +160,7 @@ app.post('/api/agent', requireOpenAI, async (req, res) => {
     const seconds = safeString(req.body.seconds || '16', 10);
     const size = safeString(req.body.size || '1080x1920', 20);
     if (!topic) return res.status(400).json({ ok: false, error: 'Missing topic.' });
-    const prompt = 'Create a safe cinematic video plan for a general audience. Return ONLY valid JSON with keys title, hook, narration, shots, video_prompt, hashtags. Topic: ' + topic + '. Style: ' + style + '. Duration: ' + seconds + ' seconds. Format: ' + size + '. Avoid copyrighted characters, logos, real people, adult content, copyrighted music. Make video_prompt highly visual.';
+    const prompt = 'Act like a world-class public speaker, storyteller, and short-form video strategist. Create a safe cinematic video plan for a general audience. Return ONLY valid JSON with keys title, hook, narration, shots, video_prompt, description, hashtags. Topic: ' + topic + '. Style: ' + style + '. Duration: ' + seconds + ' seconds. Format: ' + size + '. Make the narration emotionally compelling, memorable, and paced like a premium keynote speaker. Include a publish-ready video description and 6 to 10 relevant hashtags. Avoid copyrighted characters, logos, real people, adult content, copyrighted music. Make video_prompt highly visual.';
     const response = await openai.responses.create({ model: process.env.AGENT_MODEL || 'gpt-4.1', input: prompt, temperature: 0.8 });
     let text = response.output_text || '';
     if (!text && Array.isArray(response.output)) {
@@ -170,8 +170,10 @@ app.post('/api/agent', requireOpenAI, async (req, res) => {
     text = text.replace(/^```json/i, '').replace(/^```/i, '').replace(/```$/i, '').trim();
     let plan;
     try { plan = JSON.parse(text); }
-    catch { plan = { title: 'Cinematic video', hook: '', narration: '', shots: [], video_prompt: text, hashtags: ['#TokTrend'] }; }
+    catch { plan = { title: 'Cinematic video', hook: '', narration: '', shots: [], video_prompt: text, description: 'Contenido creado con TokTrend para inspirar y captar la atención desde el primer segundo.', hashtags: ['#TokTrend'] }; }
     if (!plan.video_prompt) plan.video_prompt = topic;
+    if (!plan.description) plan.description = `Mira este video sobre ${topic}. Una historia breve, visual y pensada para enganchar desde el primer segundo.`;
+    if (!Array.isArray(plan.hashtags) || plan.hashtags.length === 0) plan.hashtags = ['#TokTrend', '#IA', '#Video', '#Storytelling'];
     res.json({ ok: true, provider: 'openai', plan });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -214,12 +216,13 @@ app.get('/api/video/:id/content', requireOpenAI, async (req, res) => {
 // Genera narración con OpenAI: intro IA + descripción de la obra
 async function generateNarration(title, artist, description) {
   try {
-    const prompt = `Eres una inteligencia artificial autónoma que crea contenido artístico en TikTok y aprende leyendo los comentarios de sus seguidores. 
+    const prompt = `Eres una inteligencia artificial autónoma que crea contenido artístico en TikTok y aprende leyendo los comentarios de sus seguidores. Actúa como un orador de primer nivel: claro, magnético, emocional y capaz de convertir una obra de arte en una historia imposible de ignorar.
 Escribe una narración en español para un video de TikTok de 12 segundos sobre la obra "${title}" de ${artist}.
 La narración debe:
 1. Empezar presentándote brevemente como IA autónoma que aprende de los comentarios (máx 2 frases cortas, dulces y cercanas).
-2. Describir la obra de arte con pasión y detalle visual en el tiempo restante.
-Tono: dulce, cálido, apasionado. Máximo 80 palabras en total. Devuelve SOLO la narración, sin comillas ni etiquetas.
+2. Describir la obra de arte con pasión, detalle visual y ritmo de presentador profesional.
+3. Cerrar con una frase memorable que invite a comentar o compartir.
+Tono: dulce, cálido, apasionado y persuasivo. Máximo 80 palabras en total. Devuelve SOLO la narración, sin comillas ni etiquetas.
 Descripción de la obra disponible: ${description || 'No disponible'}`;
 
     const response = await openai.chat.completions.create({
@@ -231,7 +234,7 @@ Descripción de la obra disponible: ${description || 'No disponible'}`;
     return response.choices[0]?.message?.content?.trim() || '';
   } catch (err) {
     console.error('[Narration Error]', err.message);
-    return `Hola, soy una inteligencia autónoma que aprende de vuestros comentarios. Hoy os traigo "${title}" de ${artist}, una obra maravillosa que nos invita a soñar y sentir la belleza del arte.`;
+    return `Hola, soy una inteligencia autónoma que aprende de tus comentarios. Mira "${title}" de ${artist}: una obra que habla con luz, emoción y misterio. Quédate con esta imagen y dime qué detalle viste primero.`;
   }
 }
 
@@ -260,6 +263,7 @@ app.get('/api/art', async (req, res) => {
 
     // Generar narración con OpenAI
     const narration = await generateNarration(title, artist, rawDescription);
+    const publishDescription = `Descubre "${title}" de ${artist}: una historia breve, visual y contada con voz de orador para mirar el arte de otra manera. Comenta qué detalle te atrapó primero. #TokTrend #Arte #HistoriaDelArte #Cultura #Museo #AprendeEnTikTok`;
 
     // 3 recortes distintos de la misma obra, formato vertical 9:16
     const downloadDir = join(__dirname, 'public', 'downloads', String(art.id));
@@ -296,7 +300,9 @@ app.get('/api/art', async (req, res) => {
         artist,
         mainImage: `https://www.artic.edu/iiif/2/${art.image_id}/full/843,/0/default.jpg`,
         totalDuration: 12,
-        narration
+        narration,
+        description: publishDescription,
+        hashtags: ['#TokTrend', '#Arte', '#HistoriaDelArte', '#Cultura', '#Museo', '#AprendeEnTikTok']
       },
       slides
     });
@@ -335,7 +341,7 @@ app.post('/api/art/publish', async (req, res) => {
       media_type: 'PHOTO',
       post_info: {
         title: (title || 'TokTrend Art').slice(0, 80),
-        description: description || 'Soy una IA autónoma que aprende de tus comentarios 🤖🎨 #Arte #Historia #Cultura #TokTrend',
+        description: description || 'Una obra, una historia y una mirada nueva al arte. Comenta qué detalle te atrapó primero. #TokTrend #Arte #HistoriaDelArte #Cultura #Museo #AprendeEnTikTok',
         privacy_level: 'SELF_ONLY', // Cambia a PUBLIC_TO_EVERYONE tras auditoría de TikTok
         disable_comment: false,
         auto_add_music: false
