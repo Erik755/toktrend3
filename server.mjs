@@ -20,7 +20,7 @@ app.use(express.json({ limit: '2mb' }));
 const __dirname = dirname(fileURLToPath(import.meta.url));
 app.use(express.static(join(__dirname, 'public')));
 
-const REDIRECT_URI = process.env.TIKTOK_REDIRECT_URI || 'http://localhost:8787/api/tiktok/callback';
+const REDIRECT_URI = process.env.TIKTOK_REDIRECT_URI || 'https://toktrend3.onrender.com/api/tiktok/callback';
 
 const codeVerifiers = new Map();
 function storeVerifier(state, verifier) {
