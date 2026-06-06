@@ -129,6 +129,207 @@ async function saveUsedArtwork(id) {
   } catch {}
 }
 
+const PUBLISHED_VIDEOS_FILE = join(__dirname, 'published_videos.json');
+const COMMENT_LEARNING_FILE = join(__dirname, 'comment_learning.json');
+
+function readJsonFile(file, fallback) {
+  if (!fs.existsSync(file)) return fallback;
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+}
+
+function writeJsonFile(file, data) {
+  try { fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8'); } catch {}
+}
+
+async function savePublishedVideo(publishId, data) {
+  if (!publishId) return;
+  const payload = { ...data, publishId, publishedAt: data.publishedAt || Date.now() };
+  if (db) {
+    try { await db.collection('published_videos').doc(publishId).set(payload, { merge: true }); }
+    catch (e) { console.error('[Firebase] Error guardando video publicado:', e.message); }
+  }
+
+  const local = readJsonFile(PUBLISHED_VIDEOS_FILE, []);
+  const next = local.filter(v => v.publishId !== publishId);
+  next.push(payload);
+  writeJsonFile(PUBLISHED_VIDEOS_FILE, next.slice(-100));
+}
+
+async function getRecentPublishedVideos(days = 7) {
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const videos = new Map();
+
+  if (db) {
+    try {
+      const snap = await db.collection('published_videos')
+        .where('publishedAt', '>', cutoff)
+        .get();
+      snap.docs.forEach(doc => videos.set(doc.id, { publishId: doc.id, ...doc.data() }));
+    } catch (err) { console.error('[Firebase Error] Leyendo videos publicados:', err.message); }
+  }
+
+  for (const item of readJsonFile(PUBLISHED_VIDEOS_FILE, [])) {
+    if ((item.publishedAt || 0) > cutoff) videos.set(item.publishId, item);
+  }
+
+  return [...videos.values()].sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
+}
+
+async function readCommentLearning() {
+  if (db) {
+    try {
+      const doc = await db.collection('agent_learning').doc('comments').get();
+      if (doc.exists) return doc.data();
+    } catch (err) { console.error('[Firebase Error] Leyendo aprendizaje:', err.message); }
+  }
+  return readJsonFile(COMMENT_LEARNING_FILE, {
+    updatedAt: null,
+    totalComments: 0,
+    seenCommentIds: [],
+    topKeywords: [],
+    audienceQuestions: [],
+    recentComments: []
+  });
+}
+
+async function writeCommentLearning(data) {
+  const clean = {
+    ...data,
+    seenCommentIds: [...new Set(data.seenCommentIds || [])].slice(-500),
+    recentComments: (data.recentComments || []).slice(-80),
+    audienceQuestions: (data.audienceQuestions || []).slice(-20),
+    topKeywords: (data.topKeywords || []).slice(0, 12)
+  };
+  if (db) {
+    try { await db.collection('agent_learning').doc('comments').set(clean, { merge: true }); }
+    catch (err) { console.error('[Firebase Error] Guardando aprendizaje:', err.message); }
+  }
+  writeJsonFile(COMMENT_LEARNING_FILE, clean);
+  return clean;
+}
+
+function summarizeComments(comments) {
+  const stopwords = new Set('para como porque gracias hola obra arte video este esta estos estas una uno unos unas que los las con por del de la el en y a un me te se es al lo su tu mi muy mas más pero ver quiero sigo sigue seguir evolucion evolución comentario comentarios'.split(' '));
+  const counts = new Map();
+  const questions = [];
+
+  for (const comment of comments) {
+    const text = safeString(comment.text, 300);
+    if (!text) continue;
+    if (text.includes('?') || text.includes('¿')) questions.push(text);
+    const words = text.toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9ñ\s#]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 3 && !stopwords.has(w));
+    for (const word of words) counts.set(word, (counts.get(word) || 0) + 1);
+  }
+
+  return {
+    topKeywords: [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([word, count]) => ({ word, count })),
+    audienceQuestions: questions.slice(-20)
+  };
+}
+
+async function updateLearningFromComments(videoId, comments) {
+  const previous = await readCommentLearning();
+  const seen = new Set(previous.seenCommentIds || []);
+  const fresh = comments
+    .filter(c => c?.id && c?.text && !seen.has(c.id))
+    .map(c => ({ id: c.id, videoId, text: safeString(c.text, 300), readAt: Date.now() }));
+
+  const recentComments = [...(previous.recentComments || []), ...fresh];
+  const summary = summarizeComments(recentComments);
+  const next = await writeCommentLearning({
+    ...previous,
+    updatedAt: Date.now(),
+    totalComments: (previous.totalComments || 0) + fresh.length,
+    seenCommentIds: [...seen, ...fresh.map(c => c.id)],
+    recentComments,
+    topKeywords: summary.topKeywords,
+    audienceQuestions: summary.audienceQuestions
+  });
+
+  return { commentsRead: comments.length, newComments: fresh.length, learning: next };
+}
+
+async function learnFromVideoComments(videoId, tokenData) {
+  const commentsRes = await axios.get('https://open.tiktokapis.com/v2/video/comment/list/', {
+    params: { video_id: videoId, count: 20 },
+    headers: { 'Authorization': `Bearer ${tokenData.access_token}` }
+  });
+  const comments = commentsRes.data?.data?.comments || [];
+  return updateLearningFromComments(videoId, comments);
+}
+
+async function fetchPublishStatus(publishId, tokenData) {
+  if (!publishId) return null;
+  const { data } = await axios.post('https://open.tiktokapis.com/v2/post/publish/status/fetch/', {
+    publish_id: publishId
+  }, {
+    headers: {
+      'Authorization': `Bearer ${tokenData.access_token}`,
+      'Content-Type': 'application/json'
+    }
+  });
+  return data;
+}
+
+function extractPostId(statusData) {
+  const data = statusData?.data || statusData || {};
+  if (Array.isArray(data.post_id) && data.post_id.length) return String(data.post_id[0]);
+  if (data.post_id) return String(data.post_id);
+  if (data.video_id) return String(data.video_id);
+  return null;
+}
+
+async function resolveCommentVideoId(item, tokenData) {
+  if (item.videoId && item.videoId !== item.publishId) return item.videoId;
+  if (!item.publishId) return item.videoId;
+  try {
+    const status = await fetchPublishStatus(item.publishId, tokenData);
+    const postId = extractPostId(status);
+    if (postId) {
+      await savePublishedVideo(item.publishId, { ...item, videoId: postId, publishStatus: status, publishedAt: item.publishedAt || Date.now() });
+      return postId;
+    }
+  } catch (err) {
+    console.error('[Publish Status Error]', err.response?.data || err.message);
+  }
+  return item.videoId || item.publishId;
+}
+
+function learningContextText(learning) {
+  const keywords = (learning?.topKeywords || []).map(k => k.word || k).filter(Boolean).slice(0, 8).join(', ');
+  const questions = (learning?.audienceQuestions || []).slice(-3).join(' | ');
+  if (!keywords && !questions) return 'Aún no hay aprendizajes recientes de comentarios.';
+  return `Aprendizajes recientes de comentarios. Temas que interesan: ${keywords || 'sin keywords claras'}. Preguntas o señales del público: ${questions || 'sin preguntas recientes'}.`;
+}
+
+function buildPublishDescription(title, artist, learning) {
+  const top = (learning?.topKeywords || []).map(k => k.word || k).filter(Boolean).slice(0, 3);
+  const learnedSignal = top.length ? ` Aprendí que mi audiencia conecta con: ${top.join(', ')}.` : '';
+  return `Descubre "${title}" de ${artist}: una historia breve, visual y contada con voz de orador.${learnedSignal} Sígueme para ver mi evolución como IA creadora. #TokTrend #Arte #HistoriaDelArte #Cultura #Museo #AprendeEnTikTok`;
+}
+
+function pickAutonomousTopic(topics = [], learning = {}) {
+  if (!Array.isArray(topics)) topics = [safeString(topics, 80)];
+  const learned = (learning.topKeywords || []).map(k => k.word || k).find(Boolean);
+  if (learned) return learned;
+  const map = {
+    Historia: 'Van Gogh',
+    Tecnología: 'modern art',
+    Curiosidades: 'surrealism',
+    Noticias: 'impressionism',
+    Educación: 'Monet'
+  };
+  const selected = topics.find(t => map[t]);
+  return map[selected] || 'Van Gogh';
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function requireOpenAI(req, res, next) {
   if (!process.env.OPENAI_API_KEY) return res.status(500).json({ ok: false, error: 'OPENAI_API_KEY missing.' });
@@ -160,7 +361,7 @@ app.post('/api/agent', requireOpenAI, async (req, res) => {
     const seconds = safeString(req.body.seconds || '16', 10);
     const size = safeString(req.body.size || '1080x1920', 20);
     if (!topic) return res.status(400).json({ ok: false, error: 'Missing topic.' });
-    const prompt = 'Act like a world-class public speaker, storyteller, and short-form video strategist. Create a safe cinematic video plan for a general audience. Return ONLY valid JSON with keys title, hook, narration, shots, video_prompt, description, hashtags. Topic: ' + topic + '. Style: ' + style + '. Duration: ' + seconds + ' seconds. Format: ' + size + '. Make the narration emotionally compelling, memorable, and paced like a premium keynote speaker. Include a publish-ready video description and 6 to 10 relevant hashtags. Avoid copyrighted characters, logos, real people, adult content, copyrighted music. Make video_prompt highly visual.';
+    const prompt = 'Act like a world-class public speaker, storyteller, and short-form video strategist. Create a safe cinematic video plan for a general audience. Return ONLY valid JSON with keys title, hook, narration, shots, video_prompt, description, hashtags. Topic: ' + topic + '. Style: ' + style + '. Duration: ' + seconds + ' seconds. Format: ' + size + '. Make the narration emotionally compelling, memorable, and paced like a premium keynote speaker. The narration must match the video duration when read aloud, leave the final seconds for a warm farewell, and ask viewers to follow to see the AI evolve. Include a publish-ready video description and 6 to 10 relevant hashtags. Avoid copyrighted characters, logos, real people, adult content, copyrighted music. Make video_prompt highly visual.';
     const response = await openai.responses.create({ model: process.env.AGENT_MODEL || 'gpt-4.1', input: prompt, temperature: 0.8 });
     let text = response.output_text || '';
     if (!text && Array.isArray(response.output)) {
@@ -214,15 +415,21 @@ app.get('/api/video/:id/content', requireOpenAI, async (req, res) => {
 
 // ── Arte — 3 fotos × 4s = 12s ─────────────────────────────────────────────────
 // Genera narración con OpenAI: intro IA + descripción de la obra
-async function generateNarration(title, artist, description) {
+async function generateNarration(title, artist, description, options = {}) {
+  const seconds = Number(options.seconds || 12);
+  const closingSeconds = Math.min(4, Math.max(2, Math.round(seconds * 0.25)));
+  const wordLimit = Math.max(18, Math.round(seconds * 2.15));
+  const learningContext = learningContextText(options.learning);
   try {
     const prompt = `Eres una inteligencia artificial autónoma que crea contenido artístico en TikTok y aprende leyendo los comentarios de sus seguidores. Actúa como un orador de primer nivel: claro, magnético, emocional y capaz de convertir una obra de arte en una historia imposible de ignorar.
-Escribe una narración en español para un video de TikTok de 12 segundos sobre la obra "${title}" de ${artist}.
+Escribe una narración/descripción hablada en español para un video de TikTok de ${seconds} segundos sobre la obra "${title}" de ${artist}.
 La narración debe:
 1. Empezar presentándote brevemente como IA autónoma que aprende de los comentarios (máx 2 frases cortas, dulces y cercanas).
 2. Describir la obra de arte con pasión, detalle visual y ritmo de presentador profesional.
-3. Cerrar con una frase memorable que invite a comentar o compartir.
-Tono: dulce, cálido, apasionado y persuasivo. Máximo 80 palabras en total. Devuelve SOLO la narración, sin comillas ni etiquetas.
+3. Reservar los últimos ${closingSeconds} segundos para despedirte y pedir que te sigan para ver tu evolución.
+4. Durar lo mismo que el video: máximo ${wordLimit} palabras, ritmo natural, sin quedarse corta ni pasarse.
+Tono: dulce, cálido, apasionado y persuasivo. Devuelve SOLO la narración, sin comillas ni etiquetas.
+${learningContext}
 Descripción de la obra disponible: ${description || 'No disponible'}`;
 
     const response = await openai.chat.completions.create({
@@ -234,7 +441,7 @@ Descripción de la obra disponible: ${description || 'No disponible'}`;
     return response.choices[0]?.message?.content?.trim() || '';
   } catch (err) {
     console.error('[Narration Error]', err.message);
-    return `Hola, soy una inteligencia autónoma que aprende de tus comentarios. Mira "${title}" de ${artist}: una obra que habla con luz, emoción y misterio. Quédate con esta imagen y dime qué detalle viste primero.`;
+    return `Hola, soy una IA que aprende de tus comentarios. Mira "${title}" de ${artist}: luz, misterio y emoción en una sola imagen. Gracias por mirar; sígueme para ver mi evolución.`;
   }
 }
 
@@ -261,9 +468,11 @@ app.get('/api/art', async (req, res) => {
     const artist = art.artist_title || 'Artista desconocido';
     const rawDescription = art.description ? art.description.replace(/<[^>]+>/g, '') : '';
 
-    // Generar narración con OpenAI
-    const narration = await generateNarration(title, artist, rawDescription);
-    const publishDescription = `Descubre "${title}" de ${artist}: una historia breve, visual y contada con voz de orador para mirar el arte de otra manera. Comenta qué detalle te atrapó primero. #TokTrend #Arte #HistoriaDelArte #Cultura #Museo #AprendeEnTikTok`;
+    // Generar narración con OpenAI usando aprendizajes de comentarios recientes
+    const learning = await readCommentLearning();
+    const totalDuration = 12;
+    const narration = await generateNarration(title, artist, rawDescription, { seconds: totalDuration, learning });
+    const publishDescription = buildPublishDescription(title, artist, learning);
 
     // 3 recortes distintos de la misma obra, formato vertical 9:16
     const downloadDir = join(__dirname, 'public', 'downloads', String(art.id));
@@ -299,8 +508,9 @@ app.get('/api/art', async (req, res) => {
         title,
         artist,
         mainImage: `https://www.artic.edu/iiif/2/${art.image_id}/full/843,/0/default.jpg`,
-        totalDuration: 12,
+        totalDuration,
         narration,
+        spokenDurationSeconds: totalDuration,
         description: publishDescription,
         hashtags: ['#TokTrend', '#Arte', '#HistoriaDelArte', '#Cultura', '#Museo', '#AprendeEnTikTok']
       },
@@ -368,17 +578,24 @@ app.post('/api/art/publish', async (req, res) => {
     }
 
     const publishId = responseData.data?.publish_id;
-
-    // Guardar publishId en Firestore para poder responder comentarios después
-    if (db && publishId) {
-      try {
-        await db.collection('published_videos').doc(publishId).set({
-          artworkId: String(artworkId),
-          title: title || '',
-          publishedAt: Date.now()
-        });
-      } catch (e) { console.error('[Firebase] Error guardando video publicado:', e.message); }
+    let publishStatus = null;
+    let videoId = null;
+    try {
+      publishStatus = await fetchPublishStatus(publishId, tokenData);
+      videoId = extractPostId(publishStatus);
+    } catch (e) {
+      console.error('[Publish Status Error]', e.response?.data || e.message);
     }
+
+    // Guardar publishId para poder leer comentarios y aprender después.
+    await savePublishedVideo(publishId, {
+      artworkId: String(artworkId),
+      videoId: videoId || publishId,
+      title: title || '',
+      description: description || '',
+      publishStatus,
+      publishedAt: Date.now()
+    });
 
     // Limpiar archivos temporales tras 10 minutos
     setTimeout(() => {
@@ -390,12 +607,101 @@ app.post('/api/art/publish', async (req, res) => {
       } catch (err) { console.error(`[Cleanup Error]`, err.message); }
     }, 10 * 60 * 1000);
 
-    res.json({ ok: true, publishId });
+    res.json({ ok: true, publishId, videoId });
 
   } catch (err) {
     console.error('[Publish Error]', err.response?.data || err.message);
     const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
     res.status(500).json({ ok: false, error: detail });
+  }
+});
+
+app.post('/api/tiktok/learn-comments', async (req, res) => {
+  try {
+    const { videoId } = req.body;
+    if (!videoId) return res.status(400).json({ ok: false, error: 'Missing videoId.' });
+
+    const tokenData = await readToken();
+    if (!tokenData?.access_token) return res.status(401).json({ ok: false, error: 'TikTok no conectado.' });
+
+    const result = await learnFromVideoComments(videoId, tokenData);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[Learning Error]', err.response?.data || err.message);
+    res.status(500).json({ ok: false, error: err.response?.data ? JSON.stringify(err.response.data) : err.message });
+  }
+});
+
+app.post('/api/tiktok/learn-all', async (req, res) => {
+  try {
+    const tokenData = await readToken();
+    if (!tokenData?.access_token) return res.status(401).json({ ok: false, error: 'TikTok no conectado.' });
+
+    const recent = await getRecentPublishedVideos(14);
+    const results = [];
+    for (const item of recent.slice(0, 8)) {
+      try {
+        const videoId = await resolveCommentVideoId(item, tokenData);
+        results.push({ videoId, ...(await learnFromVideoComments(videoId, tokenData)) });
+      } catch (e) {
+        results.push({ videoId: item.publishId, error: e.response?.data || e.message });
+      }
+    }
+
+    res.json({ ok: true, learnedFrom: results.length, results, learning: await readCommentLearning() });
+  } catch (err) {
+    console.error('[Learning All Error]', err.response?.data || err.message);
+    res.status(500).json({ ok: false, error: err.response?.data ? JSON.stringify(err.response.data) : err.message });
+  }
+});
+
+app.post('/api/autonomous/publish', async (req, res) => {
+  try {
+    const tokenData = await readToken();
+    if (!tokenData?.access_token) return res.status(401).json({ ok: false, error: 'TikTok no conectado.' });
+
+    let learning = await readCommentLearning();
+    const recent = await getRecentPublishedVideos(14);
+    for (const item of recent.slice(0, 5)) {
+      try {
+        const videoId = await resolveCommentVideoId(item, tokenData);
+        await learnFromVideoComments(videoId, tokenData);
+      } catch (e) {
+        console.error('[Autonomous Learning Error]', e.response?.data || e.message);
+      }
+    }
+    learning = await readCommentLearning();
+
+    const topic = safeString(req.body.topic || pickAutonomousTopic(req.body.topics || [], learning), 120);
+    const host = req.headers.host;
+    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const baseUrl = `${protocol}://${host}`;
+
+    const artResponse = await axios.get(`${baseUrl}/api/art`, {
+      params: { q: topic },
+      timeout: 90000
+    });
+    if (!artResponse.data?.ok) throw new Error(artResponse.data?.error || 'No se pudo crear la obra.');
+
+    const artwork = artResponse.data.artwork;
+    const publishResponse = await axios.post(`${baseUrl}/api/art/publish`, {
+      artworkId: artwork.id,
+      title: artwork.title,
+      description: artwork.description
+    }, { timeout: 90000 });
+    if (!publishResponse.data?.ok) throw new Error(publishResponse.data?.error || 'No se pudo publicar.');
+
+    res.json({
+      ok: true,
+      topic,
+      publishId: publishResponse.data.publishId,
+      artwork,
+      slides: artResponse.data.slides,
+      learning
+    });
+  } catch (err) {
+    console.error('[Autonomous Publish Error]', err.response?.data || err.message);
+    res.status(500).json({ ok: false, error: err.response?.data ? JSON.stringify(err.response.data) : err.message });
   }
 });
 
@@ -418,8 +724,9 @@ app.post('/api/tiktok/reply-comments', requireOpenAI, async (req, res) => {
     });
 
     const comments = commentsRes.data?.data?.comments || [];
+    const learningUpdate = await updateLearningFromComments(videoId, comments);
     if (comments.length === 0) {
-      return res.json({ ok: true, replied: 0, message: 'No hay comentarios nuevos.' });
+      return res.json({ ok: true, replied: 0, message: 'No hay comentarios nuevos.', learning: learningUpdate.learning });
     }
 
     // 2. Filtrar comentarios ya respondidos
@@ -433,7 +740,7 @@ app.post('/api/tiktok/reply-comments', requireOpenAI, async (req, res) => {
 
     const pending = comments.filter(c => !alreadyReplied.has(c.id) && c.text?.trim());
     if (pending.length === 0) {
-      return res.json({ ok: true, replied: 0, message: 'Todos los comentarios ya respondidos.' });
+      return res.json({ ok: true, replied: 0, message: 'Todos los comentarios ya respondidos.', learning: learningUpdate.learning });
     }
 
     let replied = 0;
@@ -484,7 +791,7 @@ Devuelve SOLO la respuesta, sin comillas.`
       }
     }
 
-    res.json({ ok: true, replied, total: pending.length });
+    res.json({ ok: true, replied, total: pending.length, learning: learningUpdate.learning });
 
   } catch (err) {
     console.error('[Comments Error]', err.response?.data || err.message);
@@ -495,22 +802,19 @@ Devuelve SOLO la respuesta, sin comillas.`
 // Endpoint para disparar respuesta de comentarios de todos los videos recientes
 app.post('/api/tiktok/reply-all', requireOpenAI, async (req, res) => {
   try {
-    if (!db) return res.status(500).json({ ok: false, error: 'Firestore no disponible.' });
+    const tokenData = await readToken();
+    if (!tokenData?.access_token) return res.status(401).json({ ok: false, error: 'TikTok no conectado.' });
 
-    const snap = await db.collection('published_videos')
-      .where('publishedAt', '>', Date.now() - 7 * 24 * 60 * 60 * 1000) // últimos 7 días
-      .get();
-
-    if (snap.empty) return res.json({ ok: true, message: 'No hay videos recientes.' });
-
+    const recent = await getRecentPublishedVideos(7);
+    if (recent.length === 0) return res.json({ ok: true, message: 'No hay videos recientes.' });
     const results = [];
-    for (const doc of snap.docs) {
-      const { artworkId } = doc.data();
+    for (const item of recent) {
       try {
-        const r = await axios.post(`http://localhost:${port}/api/tiktok/reply-comments`, { videoId: doc.id });
-        results.push({ videoId: doc.id, artworkId, replied: r.data.replied });
+        const videoId = await resolveCommentVideoId(item, tokenData);
+        const r = await axios.post(`http://localhost:${port}/api/tiktok/reply-comments`, { videoId });
+        results.push({ videoId, artworkId: item.artworkId, replied: r.data.replied });
       } catch (e) {
-        results.push({ videoId: doc.id, artworkId, error: e.message });
+        results.push({ videoId: item.publishId || item.videoId, artworkId: item.artworkId, error: e.message });
       }
     }
 
