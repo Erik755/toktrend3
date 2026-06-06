@@ -7,8 +7,30 @@ import { dirname, join } from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import axios from 'axios';
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 
 dotenv.config();
+
+// Inicializar Firebase Admin para Firestore persistente
+let db;
+try {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    initializeApp({
+      credential: cert(serviceAccount)
+    });
+    console.log('[Firebase] Inicializado con Service Account de variables de entorno.');
+  } else {
+    initializeApp({
+      projectId: 'toktrend-fdb4f'
+    });
+    console.log('[Firebase] Inicializado con Application Default Credentials locales.');
+  }
+  db = getFirestore();
+} catch (err) {
+  console.error('[Firebase Error] Falló al inicializar Firebase Admin:', err.message);
+}
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -43,9 +65,20 @@ function generatePKCE() {
 }
 
 const TIKTOK_TOKEN_FILE = join(__dirname, 'tiktok_token.json');
-function readToken() {
+
+async function readToken() {
   if (process.env.TIKTOK_TOKEN_JSON) {
     try { return JSON.parse(process.env.TIKTOK_TOKEN_JSON); } catch { return null; }
+  }
+  if (db) {
+    try {
+      const doc = await db.collection('tokens').doc('tiktok').get();
+      if (doc.exists) {
+        return doc.data();
+      }
+    } catch (err) {
+      console.error('[Firebase Error] Leyendo token de Firestore:', err.message);
+    }
   }
   if (fs.existsSync(TIKTOK_TOKEN_FILE)) {
     try { return JSON.parse(fs.readFileSync(TIKTOK_TOKEN_FILE, 'utf8')); } catch { return null; }
@@ -53,8 +86,16 @@ function readToken() {
   return null;
 }
 
-function writeToken(data) {
+async function writeToken(data) {
   try { fs.writeFileSync(TIKTOK_TOKEN_FILE, JSON.stringify(data, null, 2)); } catch {}
+  if (db) {
+    try {
+      await db.collection('tokens').doc('tiktok').set(data);
+      console.log('[Firebase] Token guardado en Firestore.');
+    } catch (err) {
+      console.error('[Firebase Error] Escribiendo token en Firestore:', err.message);
+    }
+  }
   console.log('[Token] Guardado. Copia en TIKTOK_TOKEN_JSON si usas Render:');
   console.log(JSON.stringify(data));
 }
@@ -68,14 +109,15 @@ function safeString(value, max = 4000) {
   return String(value || '').replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, max);
 }
 
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  const token = await readToken();
   res.json({
     ok: true,
     service: 'toktrend-openai-agent-backend',
     provider: 'openai',
     openaiKeyLoaded: Boolean(process.env.OPENAI_API_KEY),
     tiktokRedirectUri: REDIRECT_URI,
-    tiktokConnected: Boolean(readToken()),
+    tiktokConnected: Boolean(token),
     time: new Date().toISOString()
   });
 });
@@ -202,7 +244,7 @@ app.post('/api/art/publish', async (req, res) => {
     if (!artworkId) return res.status(400).json({ ok: false, error: 'Missing artworkId.' });
 
     // 1. Check if token is available
-    const tokenData = readToken();
+    const tokenData = await readToken();
     if (!tokenData || !tokenData.access_token) {
       return res.status(401).json({ ok: false, error: 'TikTok no conectado. Por favor inicia sesión primero.' });
     }
@@ -302,7 +344,7 @@ app.get('/api/tiktok/callback', async (req, res) => {
     const params = new URLSearchParams({ client_key: process.env.TIKTOK_CLIENT_KEY, client_secret: process.env.TIKTOK_CLIENT_SECRET, code, grant_type: 'authorization_code', redirect_uri: REDIRECT_URI, code_verifier: verifier });
     const { data } = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', params.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cache-Control': 'no-cache' } });
     if (data.error) throw new Error(data.error_description || data.error);
-    writeToken(data);
+    await writeToken(data);
     res.send(`<div style="font-family:sans-serif;text-align:center;padding:50px"><h1 style="color:#10b981">✅ TikTok Conectado</h1><p>Puedes cerrar esta ventana.</p><script>setTimeout(()=>window.close(),3000)</script></div>`);
   } catch (err) {
     const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
@@ -310,7 +352,10 @@ app.get('/api/tiktok/callback', async (req, res) => {
   }
 });
 
-app.get('/api/tiktok/status', (req, res) => res.json({ connected: Boolean(readToken()) }));
+app.get('/api/tiktok/status', async (req, res) => {
+  const token = await readToken();
+  res.json({ connected: Boolean(token) });
+});
 
 app.all('/api/tiktok/webhook', (req, res) => {
   if (req.query.challenge) return res.send(req.query.challenge);
