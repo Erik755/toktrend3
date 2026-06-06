@@ -1,0 +1,21 @@
+{
+  "name": "toktrend-openai-agent-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs"
+  },
+  "dependencies": {
+    "axios": "^1.17.0",
+    "cors": "latest",
+    "dotenv": "latest",
+    "express": "latest",
+    "openai": "latest",
+    "pkce-challenge": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
