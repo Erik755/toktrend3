@@ -100,7 +100,6 @@
   @keyframes spin{to{transform:rotate(360deg)}}
   @media(max-width:1050px){main{grid-template-columns:1fr 1fr}.right{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:20px}}
   @media(max-width:760px){header{align-items:flex-start;flex-direction:column}main,.right{display:block}.card{margin-bottom:16px}.phone{width:440px;max-width:100%}.metrics{grid-template-columns:1fr}}
-</style>}
 </style>
 </head>
 <body>
@@ -154,7 +153,8 @@
       </div>
       <div class="progress" style="margin-top:14px"><i id="prog"></i></div>
     </div>
-
+ 
+    <div class="card" style="margin-top:16px">
       <h2>Creación manual</h2>
       <p>Genera un video artístico de 12 segundos con imágenes explicativas.</p>
       <textarea id="topic" maxlength="200" placeholder="Ej: La noche estrellada de Vincent van Gogh, La persistencia de la memoria de Salvador Dalí, El grito de Edvard Munch..."></textarea>
