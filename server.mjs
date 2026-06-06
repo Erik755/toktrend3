@@ -145,22 +145,55 @@ app.get('/api/video/:id/content', requireOpenAI, async (req, res) => {
 });
 
 // Endpoint para obtener obras de arte de Art Institute of Chicago
+const USED_ART_FILE = join(__dirname, 'used_artworks.json');
+
+function getUsedArtworks() {
+  if (fs.existsSync(USED_ART_FILE)) {
+    try {
+      return JSON.parse(fs.readFileSync(USED_ART_FILE, 'utf8'));
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
+}
+
+function saveUsedArtwork(id) {
+  const used = getUsedArtworks();
+  if (!used.includes(id)) {
+    used.push(id);
+    fs.writeFileSync(USED_ART_FILE, JSON.stringify(used, null, 2), 'utf8');
+  }
+}
+
 app.get('/api/art', async (req, res) => {
   try {
     const q = req.query.q || 'Van Gogh';
     // Buscamos obras de arte de dominio público en el Art Institute of Chicago
-    const searchUrl = `https://api.artic.edu/api/v1/artworks/search?q=${encodeURIComponent(q)}&query[term][is_public_domain]=true&limit=10&fields=id,title,artist_title,image_id,description,thumbnail`;
+    const searchUrl = `https://api.artic.edu/api/v1/artworks/search?q=${encodeURIComponent(q)}&query[term][is_public_domain]=true&limit=20&fields=id,title,artist_title,image_id,description,thumbnail`;
     const response = await axios.get(searchUrl);
     const results = response.data.data || [];
     
     // Filtrar aquellas que tengan imagen válida
-    const validArtworks = results.filter(item => item.image_id);
+    let validArtworks = results.filter(item => item.image_id);
     if (validArtworks.length === 0) {
       return res.status(404).json({ ok: false, error: 'No se encontraron obras de arte de dominio público con imágenes.' });
     }
     
-    // Tomamos la mejor coincidencia
-    const art = validArtworks[0];
+    // Filtrar las que ya han sido utilizadas para evitar repeticiones
+    const usedIds = getUsedArtworks();
+    let unusedArtworks = validArtworks.filter(item => !usedIds.includes(item.id));
+    
+    // Si todas ya han sido usadas, reiniciamos la lista para esta búsqueda para no quedarnos sin opciones
+    if (unusedArtworks.length === 0) {
+      console.log('[Art] Todas las obras ya fueron usadas, reiniciando historial...');
+      fs.writeFileSync(USED_ART_FILE, JSON.stringify([], null, 2), 'utf8');
+      unusedArtworks = validArtworks;
+    }
+    
+    // Tomamos la mejor coincidencia no usada
+    const art = unusedArtworks[0];
+    saveUsedArtwork(art.id);
     
     // Generar 4 diapositivas ("fotos") de 3 segundos cada una sobre esta misma obra
     const title = art.title || q;
@@ -176,30 +209,45 @@ app.get('/api/art', async (req, res) => {
     
     const imageUrl = `https://www.artic.edu/iiif/2/${art.image_id}/full/843,/0/default.jpg`;
     
-    // Devolvemos 4 fotos. Para simular fotos detalladas usaremos zoom/cropping con IIIF o simplemente la imagen con diferentes recortes
-    // IIIF nos permite recortar: /pct:x,y,w,h/w,h/
-    const slides = [
-      {
-        url: `https://www.artic.edu/iiif/2/${art.image_id}/pct:0,0,100,100/843,/0/default.jpg`,
-        description: descriptions[0],
-        duration: 3
-      },
-      {
-        url: `https://www.artic.edu/iiif/2/${art.image_id}/pct:10,10,80,80/843,/0/default.jpg`,
-        description: descriptions[1],
-        duration: 3
-      },
-      {
-        url: `https://www.artic.edu/iiif/2/${art.image_id}/pct:20,20,60,60/843,/0/default.jpg`,
-        description: descriptions[2],
-        duration: 3
-      },
-      {
-        url: `https://www.artic.edu/iiif/2/${art.image_id}/pct:0,0,100,100/843,/0/default.jpg`,
-        description: descriptions[3],
-        duration: 3
-      }
+    // Crear el directorio local de descargas si no existe
+    const downloadDir = join(__dirname, 'public', 'downloads', String(art.id));
+    fs.mkdirSync(downloadDir, { recursive: true });
+    
+    // Descargar localmente las 4 imágenes cortadas/enfocadas
+    const slides = [];
+    const croppings = [
+      'pct:0,0,100,100', // completo
+      'pct:10,10,80,80', // zoom medio
+      'pct:20,20,60,60', // primer plano
+      'pct:0,0,100,100'  // completo de nuevo
     ];
+    
+    for (let i = 0; i < 4; i++) {
+      const iiifUrl = `https://www.artic.edu/iiif/2/${art.image_id}/${croppings[i]}/843,/0/default.jpg`;
+      const filename = `slide_${i}.jpg`;
+      const filePath = join(downloadDir, filename);
+      
+      console.log(`[Art] Descargando imagen de slide ${i} para la obra ${art.id}...`);
+      const imgResponse = await axios({
+        url: iiifUrl,
+        method: 'GET',
+        responseType: 'stream'
+      });
+      
+      const writer = fs.createWriteStream(filePath);
+      imgResponse.data.pipe(writer);
+      
+      await new Promise((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+      
+      slides.push({
+        url: `/downloads/${art.id}/${filename}`,
+        description: descriptions[i],
+        duration: 3
+      });
+    }
     
     res.json({
       ok: true,
@@ -215,6 +263,28 @@ app.get('/api/art', async (req, res) => {
   } catch (err) {
     console.error('Error fetching art data:', err);
     res.status(500).json({ ok: false, error: err.message || 'Error al buscar obras de arte.' });
+  }
+});
+
+// Endpoint para simular publicación y borrar las imágenes descargadas
+app.post('/api/art/publish', (req, res) => {
+  try {
+    const { artworkId } = req.body;
+    if (!artworkId) {
+      return res.status(400).json({ ok: false, error: 'Falta artworkId en la petición.' });
+    }
+    
+    const dirPath = join(__dirname, 'public', 'downloads', String(artworkId));
+    if (fs.existsSync(dirPath)) {
+      console.log(`[Art] Publicación realizada. Borrando carpeta de imágenes: ${dirPath}`);
+      fs.rmSync(dirPath, { recursive: true, force: true });
+    } else {
+      console.log(`[Art] No se encontró carpeta física para borrar en: ${dirPath}`);
+    }
+    
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || 'Error al borrar imágenes temporales.' });
   }
 });
 

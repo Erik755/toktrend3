@@ -19,7 +19,7 @@
   .pill.ok{color:#6ee7b7;border-color:rgba(16,185,129,.35);background:rgba(16,185,129,.08)}
   .pill.err{color:#fb7185;border-color:rgba(251,113,133,.35);background:rgba(251,113,133,.08)}
   .pill.loading{color:#fde68a;border-color:rgba(253,230,138,.35);background:rgba(253,230,138,.08)}
-  main{position:relative;z-index:1;padding:30px clamp(20px,5vw,60px) 60px;display:grid;grid-template-columns:400px minmax(360px,1fr) 420px;gap:30px}
+  main{position:relative;z-index:1;padding:30px clamp(20px,5vw,60px) 60px;display:grid;grid-template-columns:350px minmax(300px,1fr) 380px;gap:20px}
   .card{background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.035));border:1px solid rgba(255,255,255,.1);border-radius:26px;padding:26px;box-shadow:0 20px 70px rgba(0,0,0,.28)}
   .card h2{margin:0 0 14px;font-size:24px}
   .card h3{margin:0 0 14px;font-size:20px}
@@ -41,11 +41,11 @@
   textarea{width:100%;min-height:130px;resize:vertical;background:#090912;color:#f4f4f5;border:1px solid #2b2b3d;border-radius:18px;padding:16px;margin:14px 0;font:inherit;outline:none;font-size:16px}
   textarea:focus{border-color:var(--cyan)}
   .phonewrap{display:grid;place-items:center}    .phone {
-      width: 480px;
-      height: 850px;
+      width: 330px;
+      height: 600px;
       background: var(--bg);
-      border: 16px solid #000;
-      border-radius: 54px;
+      border: 10px solid #000;
+      border-radius: 36px;
       position: relative;
       overflow: hidden;
       box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
@@ -54,17 +54,17 @@
       transform: scale(1);
       transform-origin: top center;
     }
-  .screen{height:100%;border-radius:38px;overflow:hidden;position:relative;background:linear-gradient(160deg,#101828,#330d69 55%,#130914);display:flex;flex-direction:column;justify-content:flex-end}
+  .screen{height:100%;border-radius:26px;overflow:hidden;position:relative;background:linear-gradient(160deg,#101828,#330d69 55%,#130914);display:flex;flex-direction:column;justify-content:flex-end}
   .sceneArt{position:absolute;inset:0;background:radial-gradient(circle at 35% 20%,rgba(6,182,212,.55),transparent 32%),radial-gradient(circle at 65% 43%,rgba(232,121,249,.45),transparent 30%),linear-gradient(160deg,#0f172a,#581c87,#0f172a);filter:saturate(1.18);transition:.4s;background-size:cover;background-position:center}
   .sceneArt.alt{background:radial-gradient(circle at 60% 18%,rgba(251,191,36,.5),transparent 28%),radial-gradient(circle at 36% 45%,rgba(20,184,166,.45),transparent 34%),linear-gradient(150deg,#020617,#312e81,#701a75)}
-  .phoneTop{position:absolute;top:16px;left:50%;translate:-50% 0;width:110px;height:26px;border-radius:99px;background:#030305;z-index:2}
-  .caption{position:relative;z-index:1;padding:28px;text-shadow:0 2px 20px rgba(0,0,0,.85);background:linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.5) 60%, transparent 100%)}
-  .caption b{display:block;font-size:32px;line-height:1.2;margin-bottom:14px;color:#fff;font-weight:900}
-  .caption p{color:#fff;margin:0;font-weight:500;font-size:18px;line-height:1.4}
-  .sideicons{position:absolute;right:20px;bottom:160px;display:grid;gap:20px;z-index:2}
-  .ico{width:54px;height:54px;border-radius:50%;background:rgba(255,255,255,.18);display:grid;place-items:center;border:1px solid rgba(255,255,255,.24);font-size:22px}
-  .controls{display:flex;gap:14px;margin-top:20px;justify-content:center;flex-wrap:wrap;width:480px}
-  .controls button {padding:16px 24px; font-size:16px; font-weight:bold; border-radius:16px}
+  .phoneTop{position:absolute;top:10px;left:50%;translate:-50% 0;width:80px;height:18px;border-radius:99px;background:#030305;z-index:2}
+  .caption{position:relative;z-index:1;padding:16px;text-shadow:0 2px 20px rgba(0,0,0,.85);background:linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.5) 60%, transparent 100%)}
+  .caption b{display:block;font-size:22px;line-height:1.2;margin-bottom:8px;color:#fff;font-weight:900}
+  .caption p{color:#fff;margin:0;font-weight:500;font-size:13px;line-height:1.4}
+  .sideicons{position:absolute;right:12px;bottom:100px;display:grid;gap:12px;z-index:2}
+  .ico{width:38px;height:38px;border-radius:50%;background:rgba(255,255,255,.18);display:grid;place-items:center;border:1px solid rgba(255,255,255,.24);font-size:15px}
+  .controls{display:flex;gap:8px;margin-top:12px;justify-content:center;flex-wrap:wrap;width:330px}
+  .controls button {padding:10px 14px; font-size:13px; font-weight:bold; border-radius:10px}
   .trend{display:grid;grid-template-columns:1fr auto;gap:8px;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:12px;background:rgba(255,255,255,.045);margin-top:10px}
   .trend strong{display:block;font-size:14px}.trend span{color:#a1a1aa;font-size:12px}
   .score{color:#67e8f9;font-weight:900}
@@ -430,12 +430,35 @@ $('#img').onclick = () => {
   log('Escena vertical 9:16 regenerada.');
 };
 
-$('#pub').onclick = () => {
-  if (currentVideoId) {
-    log('Video listo en: ' + BACKEND + '/api/video/' + currentVideoId + '/content', 'ok');
-    alert('Para publicación real en TikTok necesitas OAuth de TikTok. El video está disponible en:\n' + BACKEND + '/api/video/' + currentVideoId + '/content');
-  } else {
-    log('No hay video generado aún. Genera un plan primero.', 'err');
+$('#pub').onclick = async () => {
+  if (!currentPlan) {
+    log('No hay obra generada para publicar.', 'err');
+    return;
+  }
+  
+  log('Preparando publicación en TikTok...', 'info');
+  
+  try {
+    const r = await fetch(`${BACKEND}/api/art/publish`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ artworkId: currentPlan.id })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      log(`Publicación completada y archivos temporales eliminados para: ${currentPlan.title}`, 'ok');
+      alert('Publicación simulación exitosa. Las imágenes temporales han sido borradas del servidor.');
+      // Detener slideshow y limpiar imagen
+      if (slideInterval) clearInterval(slideInterval);
+      $('#art').style.backgroundImage = 'none';
+      $('#vtitle').textContent = 'TokTrend AI Engine';
+      $('#vcap').textContent = 'Genera tu primer video con OpenAI Sora ✨';
+      currentPlan = null;
+    } else {
+      throw new Error(d.error);
+    }
+  } catch(e) {
+    log('Error al publicar/limpiar: ' + e.message, 'err');
   }
 };
 
