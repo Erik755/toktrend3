@@ -196,14 +196,90 @@ app.get('/api/art', async (req, res) => {
   }
 });
 
-app.post('/api/art/publish', (req, res) => {
+app.post('/api/art/publish', async (req, res) => {
   try {
-    const { artworkId } = req.body;
+    const { artworkId, title, description } = req.body;
     if (!artworkId) return res.status(400).json({ ok: false, error: 'Missing artworkId.' });
-    const dirPath = join(__dirname, 'public', 'downloads', String(artworkId));
-    if (fs.existsSync(dirPath)) fs.rmSync(dirPath, { recursive: true, force: true });
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+
+    // 1. Check if token is available
+    const tokenData = readToken();
+    if (!tokenData || !tokenData.access_token) {
+      return res.status(401).json({ ok: false, error: 'TikTok no conectado. Por favor inicia sesión primero.' });
+    }
+
+    // 2. Check if slides exist on server
+    const downloadDir = join(__dirname, 'public', 'downloads', String(artworkId));
+    if (!fs.existsSync(downloadDir)) {
+      return res.status(404).json({ ok: false, error: 'No se encontraron las imágenes del video en el servidor.' });
+    }
+
+    // 3. Construct public URLs for the slides
+    // TikTok needs public HTTPS URLs. We assume Render's external URL or dynamic host.
+    const host = req.headers.host;
+    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const baseUrl = `${protocol}://${host}`;
+    
+    // We have 4 slides: slide_0.jpg, slide_1.jpg, slide_2.jpg, slide_3.jpg
+    const imageUrls = [];
+    for (let i = 0; i < 4; i++) {
+      imageUrls.push(`${baseUrl}/downloads/${artworkId}/slide_${i}.jpg`);
+    }
+
+    console.log('[Publish] Publicando en TikTok con las siguientes URLs:', imageUrls);
+
+    // 4. Call TikTok Content Posting API
+    const tikTokUrl = 'https://open.tiktokapis.com/v2/post/publish/content/init/';
+    const payload = {
+      post_mode: 'DIRECT_POST',
+      media_type: 'PHOTO',
+      post_info: {
+        title: (title || 'TokTrend Art').slice(0, 80),
+        description: description || 'Publicado con TokTrend #Arte',
+        privacy_level: 'PUBLIC_TO_EVERYONE',
+        disable_comment: false,
+        auto_add_music: false
+      },
+      source_info: {
+        source: 'PULL_FROM_URL',
+        photo_images: imageUrls,
+        photo_cover_index: 0
+      }
+    };
+
+    const response = await axios.post(tikTokUrl, payload, {
+      headers: {
+        'Authorization': `Bearer ${tokenData.access_token}`,
+        'Content-Type': 'application/json; charset=utf-8'
+      }
+    });
+
+    const responseData = response.data;
+    console.log('[Publish] Respuesta de TikTok API:', JSON.stringify(responseData));
+
+    // TikTok returns error field
+    if (responseData.error && responseData.error.code !== 'ok') {
+      throw new Error(responseData.error.message || `Código de error: ${responseData.error.code}`);
+    }
+
+    // 5. Schedule deletion of temporary files in 5 minutes to give TikTok time to download them
+    setTimeout(() => {
+      try {
+        if (fs.existsSync(downloadDir)) {
+          fs.rmSync(downloadDir, { recursive: true, force: true });
+          console.log(`[Cleanup] Carpeta temporal eliminada para la obra: ${artworkId}`);
+        }
+      } catch (err) {
+        console.error(`[Cleanup Error] Error al eliminar la carpeta ${artworkId}:`, err.message);
+      }
+    }, 5 * 60 * 1000);
+
+    res.json({ ok: true, publishId: responseData.data?.publish_id });
+
+  } catch (err) {
+    console.error('[Publish Error] Error al publicar:', err.response?.data || err.message);
+    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    res.status(500).json({ ok: false, error: detail });
+  }
 });
 
 app.get('/api/tiktok/login', async (req, res) => {
@@ -213,7 +289,7 @@ app.get('/api/tiktok/login', async (req, res) => {
   const { verifier, challenge } = generatePKCE();
   storeVerifier(state, verifier);
   console.log(`[Login] state:${state} redirect:${REDIRECT_URI} challenge:${challenge}`);
-  res.redirect(`https://www.tiktok.com/v2/auth/authorize?client_key=${clientKey}&response_type=code&scope=user.info.basic,video.publish&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}&code_challenge=${challenge}&code_challenge_method=S256`);
+  res.redirect(`https://www.tiktok.com/v2/auth/authorize?client_key=${clientKey}&response_type=code&scope=user.info.basic,video.publish,video.upload&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}&code_challenge=${challenge}&code_challenge_method=S256`);
 });
 
 app.get('/api/tiktok/callback', async (req, res) => {

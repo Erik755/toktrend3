@@ -388,18 +388,6 @@ function displayPlan(artwork, slides) {
   $('#meta').textContent = `#${artwork.artist.replace(/\s+/g, '')} #Arte #Museo · 12s`;
 }
 
-// Omitimos control de video Sora por completo ya que ahora es slideshow local de arte
-$('#pub').onclick = async () => {
-  if (!currentPlan) {
-    log('No hay obra generada para publicar.', 'err');
-    return;
-  }
-  
-  log('Preparando publicación en TikTok...', 'info');
-  // Aquí podemos llamar a un endpoint para publicar
-  alert('Publicación simulada en TikTok exitosa para la obra: ' + currentPlan.title);
-};
-
 // UI events
 $('#sw').onclick = e => {
   e.currentTarget.classList.toggle('off');
@@ -436,18 +424,27 @@ $('#pub').onclick = async () => {
     return;
   }
   
-  log('Preparando publicación en TikTok...', 'info');
+  $('#pub').disabled = true;
+  $('#pub').textContent = '🚀 Publicando...';
+  log('Preparando y publicando carrusel en TikTok...', 'info');
   
   try {
+    const title = currentPlan.title.slice(0, 80);
+    const description = `Descubre "${currentPlan.title}", una gran obra de ${currentPlan.artist}. Creado y publicado automáticamente con #TokTrend #Arte #Cultura #Historia`;
+
     const r = await fetch(`${BACKEND}/api/art/publish`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ artworkId: currentPlan.id })
+      body: JSON.stringify({ 
+        artworkId: currentPlan.id,
+        title: title,
+        description: description
+      })
     });
     const d = await r.json();
     if (d.ok) {
-      log(`Publicación completada y archivos temporales eliminados para: ${currentPlan.title}`, 'ok');
-      alert('Publicación simulación exitosa. Las imágenes temporales han sido borradas del servidor.');
+      log(`Publicación en TikTok exitosa. ID: ${d.publishId || 'ok'}`, 'ok');
+      alert(`¡Publicado con éxito en TikTok!\nID de publicación: ${d.publishId || 'Creado'}\nEl carrusel aparecerá en tu cuenta en unos momentos.`);
       // Detener slideshow y limpiar imagen
       if (slideInterval) clearInterval(slideInterval);
       $('#art').style.backgroundImage = 'none';
@@ -455,10 +452,14 @@ $('#pub').onclick = async () => {
       $('#vcap').textContent = 'Genera tu primer video con OpenAI Sora ✨';
       currentPlan = null;
     } else {
-      throw new Error(d.error);
+      throw new Error(d.error || 'Error desconocido al publicar');
     }
   } catch(e) {
-    log('Error al publicar/limpiar: ' + e.message, 'err');
+    log('Error al publicar: ' + e.message, 'err');
+    alert('Error al publicar: ' + e.message);
+  } finally {
+    $('#pub').disabled = false;
+    $('#pub').textContent = '🚀 Publicar';
   }
 };
 
