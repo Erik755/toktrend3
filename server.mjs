@@ -277,7 +277,7 @@ app.post('/api/art/publish', async (req, res) => {
       post_info: {
         title: (title || 'TokTrend Art').slice(0, 80),
         description: description || 'Publicado con TokTrend #Arte',
-        privacy_level: 'PUBLIC_TO_EVERYONE',
+        privacy_level: 'SELF_ONLY', // Cambia a PUBLIC_TO_EVERYONE tras auditoría de TikTok
         disable_comment: false,
         auto_add_music: false
       },
