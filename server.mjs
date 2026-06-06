@@ -12,24 +12,20 @@ import { getFirestore } from 'firebase-admin/firestore';
 
 dotenv.config();
 
-// Inicializar Firebase Admin para Firestore persistente
+// ── Firebase ──────────────────────────────────────────────────────────────────
 let db;
 try {
   if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-    initializeApp({
-      credential: cert(serviceAccount)
-    });
-    console.log('[Firebase] Inicializado con Service Account de variables de entorno.');
+    initializeApp({ credential: cert(serviceAccount) });
+    console.log('[Firebase] Inicializado con Service Account.');
   } else {
-    initializeApp({
-      projectId: 'toktrend-fdb4f'
-    });
-    console.log('[Firebase] Inicializado con Application Default Credentials locales.');
+    initializeApp({ projectId: 'toktrend-fdb4f' });
+    console.log('[Firebase] Inicializado con Application Default Credentials.');
   }
   db = getFirestore();
 } catch (err) {
-  console.error('[Firebase Error] Falló al inicializar Firebase Admin:', err.message);
+  console.error('[Firebase Error]', err.message);
 }
 
 const app = express();
@@ -44,12 +40,11 @@ app.use(express.static(join(__dirname, 'public')));
 
 const REDIRECT_URI = process.env.TIKTOK_REDIRECT_URI || 'https://toktrend3.onrender.com/api/tiktok/callback';
 
+// ── PKCE helpers ──────────────────────────────────────────────────────────────
 const codeVerifiers = new Map();
 function storeVerifier(state, verifier) {
   codeVerifiers.set(state, { verifier, expires: Date.now() + 10 * 60 * 1000 });
-  for (const [k, v] of codeVerifiers) {
-    if (v.expires < Date.now()) codeVerifiers.delete(k);
-  }
+  for (const [k, v] of codeVerifiers) if (v.expires < Date.now()) codeVerifiers.delete(k);
 }
 function getVerifier(state) {
   const entry = codeVerifiers.get(state);
@@ -57,13 +52,13 @@ function getVerifier(state) {
   codeVerifiers.delete(state);
   return entry.verifier;
 }
-
 function generatePKCE() {
   const verifier = crypto.randomBytes(32).toString('base64url');
   const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
   return { verifier, challenge };
 }
 
+// ── Token storage ─────────────────────────────────────────────────────────────
 const TIKTOK_TOKEN_FILE = join(__dirname, 'tiktok_token.json');
 
 async function readToken() {
@@ -73,12 +68,8 @@ async function readToken() {
   if (db) {
     try {
       const doc = await db.collection('tokens').doc('tiktok').get();
-      if (doc.exists) {
-        return doc.data();
-      }
-    } catch (err) {
-      console.error('[Firebase Error] Leyendo token de Firestore:', err.message);
-    }
+      if (doc.exists) return doc.data();
+    } catch (err) { console.error('[Firebase Error] Leyendo token:', err.message); }
   }
   if (fs.existsSync(TIKTOK_TOKEN_FILE)) {
     try { return JSON.parse(fs.readFileSync(TIKTOK_TOKEN_FILE, 'utf8')); } catch { return null; }
@@ -92,23 +83,62 @@ async function writeToken(data) {
     try {
       await db.collection('tokens').doc('tiktok').set(data);
       console.log('[Firebase] Token guardado en Firestore.');
-    } catch (err) {
-      console.error('[Firebase Error] Escribiendo token en Firestore:', err.message);
-    }
+    } catch (err) { console.error('[Firebase Error] Escribiendo token:', err.message); }
   }
-  console.log('[Token] Guardado. Copia en TIKTOK_TOKEN_JSON si usas Render:');
-  console.log(JSON.stringify(data));
+  console.log('[Token] Guardado:', JSON.stringify(data));
 }
 
+// ── Obras usadas — no repetir en 60 días (Firestore) ─────────────────────────
+const USED_ART_FILE = join(__dirname, 'used_artworks.json');
+const TWO_MONTHS_MS = 60 * 24 * 60 * 60 * 1000;
+
+async function getUsedArtworkIds() {
+  if (db) {
+    try {
+      const snap = await db.collection('used_artworks')
+        .where('usedAt', '>', Date.now() - TWO_MONTHS_MS)
+        .get();
+      return snap.docs.map(d => d.id);
+    } catch (err) { console.error('[Firebase Error] Leyendo obras usadas:', err.message); }
+  }
+  // fallback local
+  if (fs.existsSync(USED_ART_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(USED_ART_FILE, 'utf8'));
+      const cutoff = Date.now() - TWO_MONTHS_MS;
+      return data.filter(e => e.usedAt > cutoff).map(e => e.id);
+    } catch {}
+  }
+  return [];
+}
+
+async function saveUsedArtwork(id) {
+  const now = Date.now();
+  if (db) {
+    try {
+      await db.collection('used_artworks').doc(String(id)).set({ usedAt: now });
+    } catch (err) { console.error('[Firebase Error] Guardando obra usada:', err.message); }
+  }
+  // también local
+  try {
+    let data = [];
+    if (fs.existsSync(USED_ART_FILE)) data = JSON.parse(fs.readFileSync(USED_ART_FILE, 'utf8'));
+    data = data.filter(e => e.id !== id);
+    data.push({ id, usedAt: now });
+    fs.writeFileSync(USED_ART_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch {}
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function requireOpenAI(req, res, next) {
   if (!process.env.OPENAI_API_KEY) return res.status(500).json({ ok: false, error: 'OPENAI_API_KEY missing.' });
   next();
 }
-
 function safeString(value, max = 4000) {
   return String(value || '').replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, max);
 }
 
+// ── Health ────────────────────────────────────────────────────────────────────
 app.get('/health', async (req, res) => {
   const token = await readToken();
   res.json({
@@ -122,6 +152,7 @@ app.get('/health', async (req, res) => {
   });
 });
 
+// ── Agent (plan de video genérico) ───────────────────────────────────────────
 app.post('/api/agent', requireOpenAI, async (req, res) => {
   try {
     const topic = safeString(req.body.topic, 1200);
@@ -145,6 +176,7 @@ app.post('/api/agent', requireOpenAI, async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ── Video Sora ────────────────────────────────────────────────────────────────
 app.post('/api/video', requireOpenAI, async (req, res) => {
   try {
     const prompt = safeString(req.body.prompt || req.body.topic, 4000);
@@ -178,105 +210,132 @@ app.get('/api/video/:id/content', requireOpenAI, async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-const USED_ART_FILE = join(__dirname, 'used_artworks.json');
+// ── Arte — 3 fotos × 4s = 12s ─────────────────────────────────────────────────
+// Genera narración con OpenAI: intro IA + descripción de la obra
+async function generateNarration(title, artist, description) {
+  try {
+    const prompt = `Eres una inteligencia artificial autónoma que crea contenido artístico en TikTok y aprende leyendo los comentarios de sus seguidores. 
+Escribe una narración en español para un video de TikTok de 12 segundos sobre la obra "${title}" de ${artist}.
+La narración debe:
+1. Empezar presentándote brevemente como IA autónoma que aprende de los comentarios (máx 2 frases cortas, dulces y cercanas).
+2. Describir la obra de arte con pasión y detalle visual en el tiempo restante.
+Tono: dulce, cálido, apasionado. Máximo 80 palabras en total. Devuelve SOLO la narración, sin comillas ni etiquetas.
+Descripción de la obra disponible: ${description || 'No disponible'}`;
 
-function getUsedArtworks() {
-  if (fs.existsSync(USED_ART_FILE)) {
-    try { return JSON.parse(fs.readFileSync(USED_ART_FILE, 'utf8')); } catch {}
-  }
-  return [];
-}
-
-function saveUsedArtwork(id) {
-  const used = getUsedArtworks();
-  if (!used.includes(id)) {
-    used.push(id);
-    try { fs.writeFileSync(USED_ART_FILE, JSON.stringify(used, null, 2), 'utf8'); } catch {}
+    const response = await openai.chat.completions.create({
+      model: process.env.AGENT_MODEL || 'gpt-4.1',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 200,
+      temperature: 0.85
+    });
+    return response.choices[0]?.message?.content?.trim() || '';
+  } catch (err) {
+    console.error('[Narration Error]', err.message);
+    return `Hola, soy una inteligencia autónoma que aprende de vuestros comentarios. Hoy os traigo "${title}" de ${artist}, una obra maravillosa que nos invita a soñar y sentir la belleza del arte.`;
   }
 }
 
 app.get('/api/art', async (req, res) => {
   try {
     const q = req.query.q || 'Van Gogh';
-    const searchUrl = `https://api.artic.edu/api/v1/artworks/search?q=${encodeURIComponent(q)}&query[term][is_public_domain]=true&limit=20&fields=id,title,artist_title,image_id,description,thumbnail`;
+    const searchUrl = `https://api.artic.edu/api/v1/artworks/search?q=${encodeURIComponent(q)}&query[term][is_public_domain]=true&limit=30&fields=id,title,artist_title,image_id,description,thumbnail`;
     const response = await axios.get(searchUrl);
     const results = response.data.data || [];
     let validArtworks = results.filter(item => item.image_id);
     if (validArtworks.length === 0) return res.status(404).json({ ok: false, error: 'No artwork found.' });
-    const usedIds = getUsedArtworks();
-    let unused = validArtworks.filter(item => !usedIds.includes(item.id));
+
+    // Filtrar obras usadas en los últimos 60 días
+    const usedIds = await getUsedArtworkIds();
+    let unused = validArtworks.filter(item => !usedIds.includes(String(item.id)));
     if (unused.length === 0) {
-      try { fs.writeFileSync(USED_ART_FILE, '[]', 'utf8'); } catch {}
+      console.log('[Art] Todas las obras ya usadas en 60 días, reiniciando selección.');
       unused = validArtworks;
     }
     const art = unused[0];
-    saveUsedArtwork(art.id);
+    await saveUsedArtwork(String(art.id));
+
     const title = art.title || q;
-    const artist = art.artist_title || 'Unknown artist';
-    const descriptions = [
-      `Contemplamos "${title}", una obra maestra de ${artist}.`,
-      `El estilo único de esta pieza refleja el genio de ${artist}.`,
-      `Esta obra es patrimonio de dominio público en el Art Institute de Chicago.`,
-      `"${title}" evoca dinamismo y emociones únicas.`
-    ];
+    const artist = art.artist_title || 'Artista desconocido';
+    const rawDescription = art.description ? art.description.replace(/<[^>]+>/g, '') : '';
+
+    // Generar narración con OpenAI
+    const narration = await generateNarration(title, artist, rawDescription);
+
+    // 3 recortes distintos de la misma obra, formato vertical 9:16
     const downloadDir = join(__dirname, 'public', 'downloads', String(art.id));
     fs.mkdirSync(downloadDir, { recursive: true });
-    const croppings = ['pct:0,0,100,100', 'pct:10,10,80,80', 'pct:20,20,60,60', 'pct:0,0,100,100'];
+
+    // 3 encuadres: completo, zoom centro, zoom inferior
+    const croppings = [
+      'pct:0,0,100,100',    // Vista completa
+      'pct:15,10,70,80',    // Zoom centro
+      'pct:5,30,90,70'      // Zoom parte inferior/detalle
+    ];
+    const slideLabels = [
+      'Vista completa de la obra',
+      'Detalle central',
+      'Detalle inferior'
+    ];
+
     const slides = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 3; i++) {
       const iiifUrl = `https://www.artic.edu/iiif/2/${art.image_id}/${croppings[i]}/843,/0/default.jpg`;
       const filePath = join(downloadDir, `slide_${i}.jpg`);
       const imgResponse = await axios({ url: iiifUrl, method: 'GET', responseType: 'stream' });
       const writer = fs.createWriteStream(filePath);
       imgResponse.data.pipe(writer);
       await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
-      slides.push({ url: `/downloads/${art.id}/slide_${i}.jpg`, description: descriptions[i], duration: 3 });
+      slides.push({ url: `/downloads/${art.id}/slide_${i}.jpg`, description: slideLabels[i], duration: 4 });
     }
-    res.json({ ok: true, artwork: { id: art.id, title, artist, mainImage: `https://www.artic.edu/iiif/2/${art.image_id}/full/843,/0/default.jpg`, totalDuration: 12 }, slides });
+
+    res.json({
+      ok: true,
+      artwork: {
+        id: art.id,
+        title,
+        artist,
+        mainImage: `https://www.artic.edu/iiif/2/${art.image_id}/full/843,/0/default.jpg`,
+        totalDuration: 12,
+        narration
+      },
+      slides
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
+// ── Publicar en TikTok — 3 fotos ──────────────────────────────────────────────
 app.post('/api/art/publish', async (req, res) => {
   try {
     const { artworkId, title, description } = req.body;
     if (!artworkId) return res.status(400).json({ ok: false, error: 'Missing artworkId.' });
 
-    // 1. Check if token is available
     const tokenData = await readToken();
     if (!tokenData || !tokenData.access_token) {
       return res.status(401).json({ ok: false, error: 'TikTok no conectado. Por favor inicia sesión primero.' });
     }
 
-    // 2. Check if slides exist on server
     const downloadDir = join(__dirname, 'public', 'downloads', String(artworkId));
     if (!fs.existsSync(downloadDir)) {
-      return res.status(404).json({ ok: false, error: 'No se encontraron las imágenes del video en el servidor.' });
+      return res.status(404).json({ ok: false, error: 'No se encontraron las imágenes en el servidor.' });
     }
 
-    // 3. Construct public URLs for the slides
-    // TikTok needs public HTTPS URLs. We assume Render's external URL or dynamic host.
     const host = req.headers.host;
     const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
     const baseUrl = `${protocol}://${host}`;
-    
-    // We have 4 slides: slide_0.jpg, slide_1.jpg, slide_2.jpg, slide_3.jpg
-    const imageUrls = [];
-    for (let i = 0; i < 4; i++) {
-      imageUrls.push(`${baseUrl}/downloads/${artworkId}/slide_${i}.jpg`);
-    }
 
-    console.log('[Publish] Publicando en TikTok con las siguientes URLs:', imageUrls);
+    // 3 imágenes
+    const imageUrls = [0, 1, 2].map(i => `${baseUrl}/downloads/${artworkId}/slide_${i}.jpg`);
+    console.log('[Publish] URLs:', imageUrls);
 
-    // 4. Call TikTok Content Posting API
     const tikTokUrl = 'https://open.tiktokapis.com/v2/post/publish/content/init/';
     const payload = {
       post_mode: 'DIRECT_POST',
       media_type: 'PHOTO',
       post_info: {
         title: (title || 'TokTrend Art').slice(0, 80),
-        description: description || 'Publicado con TokTrend #Arte',
+        description: description || 'Soy una IA autónoma que aprende de tus comentarios 🤖🎨 #Arte #Historia #Cultura #TokTrend',
         privacy_level: 'SELF_ONLY', // Cambia a PUBLIC_TO_EVERYONE tras auditoría de TikTok
         disable_comment: false,
         auto_add_music: false
@@ -296,42 +355,176 @@ app.post('/api/art/publish', async (req, res) => {
     });
 
     const responseData = response.data;
-    console.log('[Publish] Respuesta de TikTok API:', JSON.stringify(responseData));
+    console.log('[Publish] Respuesta TikTok:', JSON.stringify(responseData));
 
-    // TikTok returns error field
     if (responseData.error && responseData.error.code !== 'ok') {
       throw new Error(responseData.error.message || `Código de error: ${responseData.error.code}`);
     }
 
-    // 5. Schedule deletion of temporary files in 5 minutes to give TikTok time to download them
+    const publishId = responseData.data?.publish_id;
+
+    // Guardar publishId en Firestore para poder responder comentarios después
+    if (db && publishId) {
+      try {
+        await db.collection('published_videos').doc(publishId).set({
+          artworkId: String(artworkId),
+          title: title || '',
+          publishedAt: Date.now()
+        });
+      } catch (e) { console.error('[Firebase] Error guardando video publicado:', e.message); }
+    }
+
+    // Limpiar archivos temporales tras 10 minutos
     setTimeout(() => {
       try {
         if (fs.existsSync(downloadDir)) {
           fs.rmSync(downloadDir, { recursive: true, force: true });
-          console.log(`[Cleanup] Carpeta temporal eliminada para la obra: ${artworkId}`);
+          console.log(`[Cleanup] Carpeta eliminada: ${artworkId}`);
         }
-      } catch (err) {
-        console.error(`[Cleanup Error] Error al eliminar la carpeta ${artworkId}:`, err.message);
-      }
-    }, 5 * 60 * 1000);
+      } catch (err) { console.error(`[Cleanup Error]`, err.message); }
+    }, 10 * 60 * 1000);
 
-    res.json({ ok: true, publishId: responseData.data?.publish_id });
+    res.json({ ok: true, publishId });
 
   } catch (err) {
-    console.error('[Publish Error] Error al publicar:', err.response?.data || err.message);
+    console.error('[Publish Error]', err.response?.data || err.message);
     const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
     res.status(500).json({ ok: false, error: detail });
   }
 });
 
+// ── Responder comentarios de TikTok ──────────────────────────────────────────
+// Lee comentarios de un video y responde con OpenAI (voz dulce, IA autónoma)
+app.post('/api/tiktok/reply-comments', requireOpenAI, async (req, res) => {
+  try {
+    const { videoId } = req.body;
+    if (!videoId) return res.status(400).json({ ok: false, error: 'Missing videoId.' });
+
+    const tokenData = await readToken();
+    if (!tokenData?.access_token) {
+      return res.status(401).json({ ok: false, error: 'TikTok no conectado.' });
+    }
+
+    // 1. Obtener comentarios del video
+    const commentsRes = await axios.get('https://open.tiktokapis.com/v2/video/comment/list/', {
+      params: { video_id: videoId, count: 20 },
+      headers: { 'Authorization': `Bearer ${tokenData.access_token}` }
+    });
+
+    const comments = commentsRes.data?.data?.comments || [];
+    if (comments.length === 0) {
+      return res.json({ ok: true, replied: 0, message: 'No hay comentarios nuevos.' });
+    }
+
+    // 2. Filtrar comentarios ya respondidos
+    let alreadyReplied = new Set();
+    if (db) {
+      try {
+        const snap = await db.collection('replied_comments').where('videoId', '==', videoId).get();
+        snap.docs.forEach(d => alreadyReplied.add(d.id));
+      } catch {}
+    }
+
+    const pending = comments.filter(c => !alreadyReplied.has(c.id) && c.text?.trim());
+    if (pending.length === 0) {
+      return res.json({ ok: true, replied: 0, message: 'Todos los comentarios ya respondidos.' });
+    }
+
+    let replied = 0;
+    for (const comment of pending.slice(0, 5)) { // máx 5 por llamada
+      try {
+        // Generar respuesta dulce con OpenAI
+        const aiRes = await openai.chat.completions.create({
+          model: process.env.AGENT_MODEL || 'gpt-4.1',
+          messages: [{
+            role: 'user',
+            content: `Eres una IA autónoma y cariñosa que crea contenido de arte en TikTok y aprende de los comentarios de sus seguidores. 
+Responde a este comentario de forma dulce, breve y cercana (máx 150 caracteres): "${comment.text}"
+Devuelve SOLO la respuesta, sin comillas.`
+          }],
+          max_tokens: 80,
+          temperature: 0.9
+        });
+
+        const replyText = aiRes.choices[0]?.message?.content?.trim() || '¡Gracias por tu comentario! 💙 Sigo aprendiendo gracias a ti.';
+
+        // Publicar respuesta en TikTok
+        await axios.post('https://open.tiktokapis.com/v2/video/comment/reply/', {
+          video_id: videoId,
+          parent_comment_id: comment.id,
+          text: replyText.slice(0, 150)
+        }, {
+          headers: {
+            'Authorization': `Bearer ${tokenData.access_token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        // Marcar como respondido en Firestore
+        if (db) {
+          try {
+            await db.collection('replied_comments').doc(comment.id).set({ videoId, repliedAt: Date.now() });
+          } catch {}
+        }
+
+        replied++;
+        console.log(`[Comments] Respondido comentario ${comment.id}: ${replyText}`);
+
+        // Pequeña pausa entre respuestas para no saturar la API
+        await new Promise(r => setTimeout(r, 1500));
+
+      } catch (commentErr) {
+        console.error(`[Comments] Error respondiendo ${comment.id}:`, commentErr.response?.data || commentErr.message);
+      }
+    }
+
+    res.json({ ok: true, replied, total: pending.length });
+
+  } catch (err) {
+    console.error('[Comments Error]', err.response?.data || err.message);
+    res.status(500).json({ ok: false, error: err.response?.data ? JSON.stringify(err.response.data) : err.message });
+  }
+});
+
+// Endpoint para disparar respuesta de comentarios de todos los videos recientes
+app.post('/api/tiktok/reply-all', requireOpenAI, async (req, res) => {
+  try {
+    if (!db) return res.status(500).json({ ok: false, error: 'Firestore no disponible.' });
+
+    const snap = await db.collection('published_videos')
+      .where('publishedAt', '>', Date.now() - 7 * 24 * 60 * 60 * 1000) // últimos 7 días
+      .get();
+
+    if (snap.empty) return res.json({ ok: true, message: 'No hay videos recientes.' });
+
+    const results = [];
+    for (const doc of snap.docs) {
+      const { artworkId } = doc.data();
+      try {
+        const r = await axios.post(`http://localhost:${port}/api/tiktok/reply-comments`, { videoId: doc.id });
+        results.push({ videoId: doc.id, artworkId, replied: r.data.replied });
+      } catch (e) {
+        results.push({ videoId: doc.id, artworkId, error: e.message });
+      }
+    }
+
+    res.json({ ok: true, results });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── TikTok OAuth ──────────────────────────────────────────────────────────────
 app.get('/api/tiktok/login', async (req, res) => {
   const clientKey = process.env.TIKTOK_CLIENT_KEY;
   if (!clientKey) return res.status(500).send('Missing TIKTOK_CLIENT_KEY');
   const state = crypto.randomBytes(8).toString('hex');
   const { verifier, challenge } = generatePKCE();
   storeVerifier(state, verifier);
-  console.log(`[Login] state:${state} redirect:${REDIRECT_URI} challenge:${challenge}`);
-  res.redirect(`https://www.tiktok.com/v2/auth/authorize?client_key=${clientKey}&response_type=code&scope=user.info.basic,video.publish,video.upload&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}&code_challenge=${challenge}&code_challenge_method=S256`);
+  // Incluye comment.list y comment.create para responder comentarios
+  const scope = 'user.info.basic,video.publish,video.upload,comment.list,comment.create';
+  console.log(`[Login] state:${state} redirect:${REDIRECT_URI}`);
+  res.redirect(`https://www.tiktok.com/v2/auth/authorize?client_key=${clientKey}&response_type=code&scope=${encodeURIComponent(scope)}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}&code_challenge=${challenge}&code_challenge_method=S256`);
 });
 
 app.get('/api/tiktok/callback', async (req, res) => {
@@ -341,8 +534,17 @@ app.get('/api/tiktok/callback', async (req, res) => {
   const verifier = getVerifier(state);
   if (!verifier) return res.status(400).send('<h1>Estado inválido o expirado. Vuelve a intentarlo.</h1>');
   try {
-    const params = new URLSearchParams({ client_key: process.env.TIKTOK_CLIENT_KEY, client_secret: process.env.TIKTOK_CLIENT_SECRET, code, grant_type: 'authorization_code', redirect_uri: REDIRECT_URI, code_verifier: verifier });
-    const { data } = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', params.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cache-Control': 'no-cache' } });
+    const params = new URLSearchParams({
+      client_key: process.env.TIKTOK_CLIENT_KEY,
+      client_secret: process.env.TIKTOK_CLIENT_SECRET,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: REDIRECT_URI,
+      code_verifier: verifier
+    });
+    const { data } = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', params.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cache-Control': 'no-cache' }
+    });
     if (data.error) throw new Error(data.error_description || data.error);
     await writeToken(data);
     res.send(`<div style="font-family:sans-serif;text-align:center;padding:50px"><h1 style="color:#10b981">✅ TikTok Conectado</h1><p>Puedes cerrar esta ventana.</p><script>setTimeout(()=>window.close(),3000)</script></div>`);

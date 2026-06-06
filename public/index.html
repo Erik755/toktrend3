@@ -64,7 +64,7 @@
   .sideicons{position:absolute;right:12px;bottom:100px;display:grid;gap:12px;z-index:2}
   .ico{width:38px;height:38px;border-radius:50%;background:rgba(255,255,255,.18);display:grid;place-items:center;border:1px solid rgba(255,255,255,.24);font-size:15px}
   .controls{display:flex;gap:6px;margin-top:10px;justify-content:center;flex-wrap:wrap;width:260px}
-  .controls button {padding:8px 10px; font-size:12px; font-weight:bold; border-radius:8px}
+  .controls button {padding:8px 8px; font-size:11px; font-weight:bold; border-radius:8px}
   .trend{display:grid;grid-template-columns:1fr auto;gap:8px;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:12px;background:rgba(255,255,255,.045);margin-top:10px}
   .trend strong{display:block;font-size:14px}.trend span{color:#a1a1aa;font-size:12px}
   .score{color:#67e8f9;font-weight:900}
@@ -190,6 +190,7 @@
         <button id="play">▶ Narrador</button>
         <button id="img">🖼 Nueva escena</button>
         <button id="pub">🚀 Publicar</button>
+        <button id="replyBtn" title="Responder comentarios de TikTok con IA">💬 Responder</button>
       </div>
     </div>
   </section>
@@ -347,9 +348,9 @@ function startSlideshow() {
   slideInterval = setInterval(() => {
     currentSlideIndex = (currentSlideIndex + 1) % currentSlides.length;
     playSlide();
-  }, 3000); // 3 segundos por foto
+  }, 4000); // 4 segundos por foto
   
-  log('Slideshow de 12 segundos iniciado (4 imágenes x 3s)', 'info');
+  log('Slideshow de 12 segundos iniciado (3 imágenes x 4s)', 'info');
 }
 
 function playSlide() {
@@ -371,21 +372,27 @@ function playSlide() {
 
 function displayPlan(artwork, slides) {
   const shots = slides.map((s, idx) =>
-    `<div class="plan-shot">⬥ <b>Escena ${idx + 1} (3s)</b> — ${s.description}</div>`
+    `<div class="plan-shot">⬥ <b>Foto ${idx + 1} (4s)</b> — ${s.description}</div>`
   ).join('');
 
   $('#planBox').innerHTML = `
     <div class="plan-title">🎨 ${artwork.title}</div>
     <div class="plan-hook">👤 Artista: ${artwork.artist}</div>
-    <div class="plan-narr">⏱️ Duración total: ${artwork.totalDuration}s (4 fotos x 3s)</div>
+    <div class="plan-narr">⏱️ Duración total: ${artwork.totalDuration}s (3 fotos x 4s)</div>
     ${shots}
+    ${artwork.narration ? `<div style="margin-top:10px;padding:10px;background:rgba(6,182,212,.07);border-radius:10px;border-left:3px solid var(--cyan);color:#e4e4e7;font-size:13px;line-height:1.6">🗣️ <b>Narración IA:</b><br>${artwork.narration}</div>` : ''}
     <div class="plan-tags"><span>#Arte</span><span>#Historia</span><span>#Cultura</span></div>
   `;
   $('#planBox').classList.remove('hidden');
 
-  // Update phone preview title
+  // Update phone preview
   $('#vtitle').textContent = artwork.title.slice(0, 46);
   $('#meta').textContent = `#${artwork.artist.replace(/\s+/g, '')} #Arte #Museo · 12s`;
+
+  // Narrar automáticamente con voz dulce
+  if (artwork.narration) {
+    setTimeout(() => speakNarration(artwork.narration), 800);
+  }
 }
 
 // UI events
@@ -443,6 +450,7 @@ $('#pub').onclick = async () => {
     });
     const d = await r.json();
     if (d.ok) {
+      lastPublishId = d.publishId || null;
       log(`Publicación en TikTok exitosa. ID: ${d.publishId || 'ok'}`, 'ok');
       alert(`¡Publicado con éxito en TikTok!\nID de publicación: ${d.publishId || 'Creado'}\nEl carrusel aparecerá en tu cuenta en unos momentos.`);
       // Detener slideshow y limpiar imagen
@@ -463,19 +471,68 @@ $('#pub').onclick = async () => {
   }
 };
 
+// Voz dulce — función central de narración
+function speakNarration(text) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'es-ES';
+  u.rate = 0.92;
+  u.pitch = 1.15;  // voz más dulce y suave
+  u.volume = 1;
+  // Intentar elegir una voz femenina suave
+  const voices = speechSynthesis.getVoices();
+  const sweet = voices.find(v => v.lang.startsWith('es') && /female|mujer|Monica|Paulina|Esperanza|Lucia|Elena/i.test(v.name))
+             || voices.find(v => v.lang.startsWith('es'));
+  if (sweet) u.voice = sweet;
+  u.onend = () => { $('#play').textContent = '▶ Narrador'; playing = false; };
+  speechSynthesis.speak(u);
+  playing = true;
+  $('#play').textContent = '⏸ Pausar';
+  log('Narrador de voz iniciado.');
+}
+
 $('#play').onclick = () => {
-  playing = !playing;
-  $('#play').textContent = playing ? '⏸ Pausar' : '▶ Narrador';
   if (playing) {
-    const u = new SpeechSynthesisUtterance($('#vtitle').textContent + '. ' + $('#vcap').textContent);
-    u.lang = 'es-ES'; u.rate = 1.05;
-    u.onend = () => { $('#play').textContent = '▶ Narrador'; playing = false; };
     speechSynthesis.cancel();
-    speechSynthesis.speak(u);
-    log('Narrador de voz iniciado.');
-  } else {
-    speechSynthesis.cancel();
+    playing = false;
+    $('#play').textContent = '▶ Narrador';
     log('Narrador pausado.');
+  } else {
+    const narration = $('#planBox')?.querySelector('div[style*="border-left"]')?.textContent?.replace('🗣️ Narración IA:', '').trim()
+      || $('#vtitle').textContent + '. ' + $('#vcap').textContent;
+    speakNarration(narration);
+  }
+};
+
+// Responder comentarios con IA
+let lastPublishId = null;
+
+$('#replyBtn').onclick = async () => {
+  if (!lastPublishId) {
+    log('Primero publica un video para poder responder comentarios.', 'err');
+    alert('Primero publica un video.');
+    return;
+  }
+  $('#replyBtn').disabled = true;
+  $('#replyBtn').textContent = '⏳ Respondiendo...';
+  log('Respondiendo comentarios con IA…', 'info');
+  try {
+    const r = await fetch(`${BACKEND}/api/tiktok/reply-comments`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ videoId: lastPublishId })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      log(`Respondidos ${d.replied} comentario(s). ${d.message || ''}`, 'ok');
+    } else {
+      throw new Error(d.error || 'Error desconocido');
+    }
+  } catch(e) {
+    log('Error al responder comentarios: ' + e.message, 'err');
+  } finally {
+    $('#replyBtn').disabled = false;
+    $('#replyBtn').textContent = '💬 Responder';
   }
 };
 
