@@ -12,6 +12,7 @@ import { promisify } from 'util';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import ffmpegPath from '@ffmpeg-installer/ffmpeg';
+import gTTS from 'gtts';
 
 dotenv.config();
 const execAsync = promisify(exec);
@@ -177,11 +178,16 @@ async function fetchImages(topic, outputDir) {
   return images.slice(0, 7);
 }
 
-// TTS via OpenAI (voz dulce nova)
+// TTS via gTTS (gratis)
 async function generateAudio(script, outputPath) {
-  const response = await openai.audio.speech.create({ model: 'tts-1', voice: 'nova', input: script, speed: 0.92 });
-  fs.writeFileSync(outputPath, Buffer.from(await response.arrayBuffer()));
-  console.log('[TTS] Audio:', outputPath);
+  return new Promise((resolve, reject) => {
+    const tts = new gTTS(script, 'es');
+    tts.save(outputPath, (err) => {
+      if (err) return reject(err);
+      console.log('[TTS] Audio:', outputPath);
+      resolve();
+    });
+  });
 }
 
 // Build MP4 with ffmpeg

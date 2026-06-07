@@ -14,6 +14,7 @@
     "dotenv": "latest",
     "express": "latest",
     "firebase-admin": "^13.10.0",
+    "gtts": "^0.2.1",
     "openai": "latest",
     "pkce-challenge": "^6.0.0"
   },
