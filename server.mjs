@@ -92,7 +92,7 @@ function requireOpenAI(req, res, next) {
 // Health
 app.get('/health', async (req, res) => {
   const token = await readToken();
-  res.json({ ok: true, tiktokConnected: Boolean(token), time: new Date().toISOString() });
+  res.json({ ok: true, version: "gtts-fix-3", tiktokConnected: Boolean(token), time: new Date().toISOString() });
 });
 
 // Disconnect TikTok
