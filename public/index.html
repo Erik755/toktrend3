@@ -93,6 +93,8 @@ textarea:focus{border-color:var(--cyan)}
 .tag{font-size:9px;padding:2px 6px;border-radius:999px;background:rgba(6,182,212,.1);border:1px solid rgba(6,182,212,.22);color:#67e8f9}
 .agent{font-size:10px;color:var(--muted);margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.07)}
 
+.is-placeholder #sTitle, .is-placeholder #sScript, .is-placeholder #sShots{color:var(--muted)!important;font-style:italic}
+
 @media(max-width:1100px){main{grid-template-columns:1fr 1fr}}
 @media(max-width:640px){main{display:block}.card{margin-bottom:10px}}
 </style>
@@ -179,14 +181,14 @@ textarea:focus{border-color:var(--cyan)}
 
   <!-- COL 3: Guion Generado -->
   <section>
-    <div class="card hidden" id="scriptCard" style="height:100%">
+    <div class="card is-placeholder" id="scriptCard" style="height:100%">
       <h3>Guión generado</h3>
-      <div class="sp-title" id="sTitle">—</div>
-      <div class="sp-box" id="sScript" style="max-height:220px">—</div>
-      <div class="label">ESCENAS</div>
-      <div id="sShots"></div>
+      <div class="sp-title" id="sTitle">Aún no hay video</div>
+      <div class="sp-box" id="sScript" style="max-height:220px">Escribe un tema a la izquierda y presiona Generar Video para ver el guión aquí.</div>
+      <div class="label" style="margin-top:10px">ESCENAS</div>
+      <div id="sShots">Las escenas aparecerán aquí...</div>
       <div class="tags" id="sTags"></div>
-      <div class="sp-box" id="sDesc" style="margin-top:7px;color:var(--muted);font-size:9px;max-height:80px"></div>
+      <div class="sp-box" id="sDesc" style="margin-top:7px;color:var(--muted);font-size:9px;max-height:80px;display:none"></div>
     </div>
   </section>
 
@@ -305,12 +307,13 @@ function showSlide() {
 
 // ── Script panel ──────────────────────────────────────────────────────────────
 function showScript(sd) {
+  $('#scriptCard').classList.remove('is-placeholder');
   $('#sTitle').textContent = sd.title||'—';
   $('#sScript').textContent = sd.script||'—';
   $('#sDesc').textContent = sd.description||'';
+  $('#sDesc').style.display = 'block';
   $('#sShots').innerHTML = (sd.shots||[]).map((s,i)=>`<div class="shot">⬥ ${i+1}: ${s}</div>`).join('');
   $('#sTags').innerHTML = (sd.hashtags||[]).map(h=>`<span class="tag">${h}</span>`).join('');
-  $('#scriptCard').classList.remove('hidden');
   $('#vtitle').textContent = (sd.title||'').slice(0,34);
   $('#vmeta').textContent = (sd.hashtags||[]).slice(0,4).join(' ');
 }
