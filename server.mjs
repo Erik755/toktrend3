@@ -89,9 +89,12 @@ function requireOpenAI(req, res, next) {
 }
 
 // Health
+const appLogs = [];
+const logError = (msg) => { appLogs.push({ time: new Date().toISOString(), msg }); if(appLogs.length > 20) appLogs.shift(); console.error(msg); };
+
 app.get('/health', async (req, res) => {
   const token = await readToken();
-  res.json({ ok: true, version: "gtts-fix-5", tiktokConnected: Boolean(token), time: new Date().toISOString() });
+  res.json({ ok: true, version: "gtts-fix-6", tiktokConnected: Boolean(token), time: new Date().toISOString(), logs: appLogs });
 });
 
 // Disconnect TikTok
@@ -254,7 +257,7 @@ app.get('/api/generate', requireOpenAI, async (req, res) => {
       slides: images.map((_, i) => ({ url: `/videos/${sessionId}/imgs/img_${i}.jpg`, description: scriptData.shots?.[i] || `Escena ${i+1}`, duration: 4 }))
     });
   } catch (err) {
-    console.error('[Generate Error]', err.message);
+    logError('[Generate Error] ' + err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -295,8 +298,9 @@ app.post('/api/publish', async (req, res) => {
     if (db && publishId) { try { await db.collection('published_videos').doc(publishId).set({ sessionId, title: title||'', publishedAt: Date.now() }); } catch {} }
     res.json({ ok: true, publishId });
   } catch (err) {
-    console.error('[Publish Error]', err.response?.data || err.message);
-    res.status(500).json({ ok: false, error: err.response?.data ? JSON.stringify(err.response.data) : err.message });
+    const msg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    logError('[Publish Error] ' + msg);
+    res.status(500).json({ ok: false, error: msg });
   }
 });
 
