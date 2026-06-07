@@ -11,6 +11,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
+import ffmpegPath from '@ffmpeg-installer/ffmpeg';
 
 dotenv.config();
 const execAsync = promisify(exec);
@@ -119,7 +120,7 @@ Devuelve SOLO JSON valido sin markdown:
 }`;
 
   const response = await openai.chat.completions.create({
-    model: process.env.AGENT_MODEL || 'gpt-4.1',
+    model: process.env.AGENT_MODEL || 'gpt-4o',
     messages: [{ role: 'user', content: prompt }],
     max_tokens: 900,
     temperature: 0.88
@@ -191,7 +192,7 @@ async function buildVideo(images, audioPath, outputPath, totalSeconds = 29) {
   fs.writeFileSync(concatFile, lines);
 
   const cmd = [
-    'ffmpeg -y',
+    `"${ffmpegPath.path}" -y`,
     `-f concat -safe 0 -i "${concatFile}"`,
     `-i "${audioPath}"`,
     `-vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30"`,
@@ -335,11 +336,11 @@ app.get('/api/tiktok/callback', async (req, res) => {
   if (!verifier) return res.status(400).send('<h1>Estado inválido.</h1>');
   try {
     const params = new URLSearchParams({ client_key: process.env.TIKTOK_CLIENT_KEY, client_secret: process.env.TIKTOK_CLIENT_SECRET, code, grant_type: 'authorization_code', redirect_uri: REDIRECT_URI, code_verifier: verifier });
-    const { data } = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', params.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    const { data } = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', params.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cache-Control': 'no-cache' } });
     if (data.error) throw new Error(data.error_description || data.error);
     await writeToken(data);
     res.send(`<div style="font-family:sans-serif;text-align:center;padding:50px"><h1 style="color:#10b981">✅ TikTok Conectado</h1><script>setTimeout(()=>window.close(),2500)</script></div>`);
-  } catch (err) { res.status(500).send(`<h1>Error</h1><pre>${err.message}</pre>`); }
+  } catch (err) { res.status(500).send(`<h1>Error conectando a TikTok</h1><pre>${err.response ? JSON.stringify(err.response.data, null, 2) : err.message}</pre><p>Revisa TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET y que el Redirect URI en TikTok coincida exactamente con: <b>${REDIRECT_URI}</b></p>`); }
 });
 
 app.get('/api/tiktok/status', async (req, res) => {
