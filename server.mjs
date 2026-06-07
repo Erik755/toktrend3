@@ -324,7 +324,8 @@ app.get('/api/tiktok/login', async (req, res) => {
   const state = crypto.randomBytes(8).toString('hex');
   const { verifier, challenge } = generatePKCE();
   storeVerifier(state, verifier);
-  const scope = 'user.info.basic,video.publish,video.upload,comment.list,comment.create';
+  // Removido video.upload ya que está obsoleto en la v2 y suele dar invalid_scope.
+  const scope = 'user.info.basic,video.publish,comment.list,comment.create';
   res.redirect(`https://www.tiktok.com/v2/auth/authorize?client_key=${clientKey}&response_type=code&scope=${encodeURIComponent(scope)}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}&code_challenge=${challenge}&code_challenge_method=S256`);
 });
 
