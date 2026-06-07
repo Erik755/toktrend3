@@ -91,7 +91,7 @@ function requireOpenAI(req, res, next) {
 // Health
 app.get('/health', async (req, res) => {
   const token = await readToken();
-  res.json({ ok: true, version: "gtts-fix-4", tiktokConnected: Boolean(token), time: new Date().toISOString() });
+  res.json({ ok: true, version: "gtts-fix-5", tiktokConnected: Boolean(token), time: new Date().toISOString() });
 });
 
 // Disconnect TikTok
@@ -213,9 +213,9 @@ async function buildVideo(images, audioPath, outputPath, totalSeconds = 29) {
     `"${ffmpegPath.path}" -y`,
     `-f concat -safe 0 -i "${concatFile}"`,
     `-i "${audioPath}"`,
-    `-vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30"`,
-    `-c:v libx264 -preset fast -crf 23`,
-    `-c:a aac -b:a 128k -ar 44100`,
+    `-vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=24"`,
+    `-c:v libx264 -preset ultrafast -crf 28 -threads 1`,
+    `-c:a aac -b:a 64k -ar 44100`,
     `-shortest -movflags +faststart -t ${totalSeconds}`,
     `"${outputPath}"`
   ].join(' ');
