@@ -14,7 +14,6 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg');
-const gTTS = require('gtts');
 
 dotenv.config();
 const execAsync = promisify(exec);
@@ -92,7 +91,7 @@ function requireOpenAI(req, res, next) {
 // Health
 app.get('/health', async (req, res) => {
   const token = await readToken();
-  res.json({ ok: true, version: "gtts-fix-3", tiktokConnected: Boolean(token), time: new Date().toISOString() });
+  res.json({ ok: true, version: "gtts-fix-4", tiktokConnected: Boolean(token), time: new Date().toISOString() });
 });
 
 // Disconnect TikTok
@@ -180,16 +179,27 @@ async function fetchImages(topic, outputDir) {
   return images.slice(0, 7);
 }
 
-// TTS via gTTS (gratis)
+// TTS via Google Translate (gratis, via axios)
 async function generateAudio(script, outputPath) {
-  return new Promise((resolve, reject) => {
-    const tts = new gTTS(script, 'es');
-    tts.save(outputPath, (err) => {
-      if (err) return reject(err);
-      console.log('[TTS] Audio:', outputPath);
-      resolve();
-    });
-  });
+  // Split script into chunks of < 200 chars
+  const chunks = script.match(/[^.!?]+[.!?]+/g) || [script];
+  const buffers = [];
+  for (const chunk of chunks) {
+    if (!chunk.trim()) continue;
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=es&q=${encodeURIComponent(chunk.trim())}`;
+    try {
+      const res = await axios({ url, method: 'GET', responseType: 'arraybuffer' });
+      buffers.push(Buffer.from(res.data));
+    } catch (e) {
+      console.error('[TTS Chunk Error]', e.message);
+    }
+  }
+  if (buffers.length > 0) {
+    fs.writeFileSync(outputPath, Buffer.concat(buffers));
+    console.log('[TTS] Audio:', outputPath);
+  } else {
+    throw new Error('TTS Failed to generate audio');
+  }
 }
 
 // Build MP4 with ffmpeg
