@@ -94,7 +94,7 @@ const logError = (msg) => { appLogs.push({ time: new Date().toISOString(), msg }
 
 app.get('/health', async (req, res) => {
   const token = await readToken();
-  res.json({ ok: true, version: "gtts-fix-8", tiktokConnected: Boolean(token), time: new Date().toISOString(), logs: appLogs });
+  res.json({ ok: true, version: "gtts-fix-9", tiktokConnected: Boolean(token), time: new Date().toISOString(), logs: appLogs });
 });
 
 // Disconnect TikTok
@@ -158,13 +158,13 @@ async function fetchImages(queries, outputDir) {
     const query = queries[i] || queries[0] || 'abstract';
 
     try {
-      const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&prop=imageinfo&iiprop=url&format=json&gsrlimit=3`;
+      const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query + ' filetype:bitmap')}&gsrnamespace=6&prop=imageinfo&iiprop=url&iiurlwidth=800&format=json&gsrlimit=3`;
       const res = await axios.get(url, { timeout: 8000 });
       const pages = res.data.query?.pages;
       if (pages) {
         const p = Object.values(pages)[0];
-        if (p?.imageinfo?.[0]?.url) {
-          const imgUrl = p.imageinfo[0].url;
+        if (p?.imageinfo?.[0]) {
+          const imgUrl = p.imageinfo[0].thumburl || p.imageinfo[0].url;
           const imgRes = await axios({ url: imgUrl, method: 'GET', responseType: 'stream', timeout: 10000 });
           const writer = fs.createWriteStream(filePath);
           imgRes.data.pipe(writer);
