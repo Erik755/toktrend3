@@ -94,7 +94,7 @@ const logError = (msg) => { appLogs.push({ time: new Date().toISOString(), msg }
 
 app.get('/health', async (req, res) => {
   const token = await readToken();
-  res.json({ ok: true, version: "gtts-fix-7", tiktokConnected: Boolean(token), time: new Date().toISOString(), logs: appLogs });
+  res.json({ ok: true, version: "gtts-fix-8", tiktokConnected: Boolean(token), time: new Date().toISOString(), logs: appLogs });
 });
 
 // Disconnect TikTok
@@ -115,14 +115,15 @@ INSTRUCCIONES ESTRICTAS:
 - Tono: apasionado, cercano, culto y magnetico. Nunca aburrido. Habla directamente al espectador.
 - Termina con: "Dejame tu comentario, aprendo de ti."
 
-Devuelve SOLO JSON valido sin markdown:
-{
-  "title": "Titulo del video (max 80 chars)",
-  "script": "El guion completo narrado en primera persona (120-140 palabras)",
-  "description": "Descripcion TikTok con contexto y call-to-action (max 300 chars)",
-  "hashtags": ["#tag1","#tag2","#tag3","#tag4","#tag5","#tag6","#tag7","#tag8"],
-  "shots": ["Descripcion visual escena 1","Escena 2","Escena 3","Escena 4","Escena 5","Escena 6","Escena 7"]
-}`;
+    Devuelve SOLO JSON valido sin markdown:
+    {
+      "title": "Titulo del video (max 80 chars)",
+      "script": "El guion completo narrado en primera persona (120-140 palabras)",
+      "description": "Descripcion TikTok con contexto y call-to-action (max 300 chars)",
+      "hashtags": ["#tag1","#tag2","#tag3","#tag4","#tag5","#tag6","#tag7","#tag8"],
+      "shots": ["Descripcion visual escena 1","Escena 2","Escena 3","Escena 4","Escena 5","Escena 6","Escena 7"],
+      "image_queries": ["1-2 english keywords for scene 1 (e.g. galaxy)", "english keywords for scene 2", "english keywords for scene 3", "english keywords for scene 4", "english keywords for scene 5", "english keywords for scene 6", "english keywords for scene 7"]
+    }`;
 
   const response = await openai.chat.completions.create({
     model: 'gpt-4o',
@@ -139,45 +140,51 @@ Devuelve SOLO JSON valido sin markdown:
       script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. Hoy quiero hablarte de ${topic}. Un tema fascinante que merece toda tu atencion. Dejame tu comentario, aprendo de ti.`,
       description: `${topic} — IA autonoma que aprende de tus comentarios. #TokTrend`,
       hashtags: ['#TokTrend','#IA','#Viral','#Aprende','#Cultura'],
-      shots: ['Escena 1','Escena 2','Escena 3']
+      shots: ['Escena 1','Escena 2','Escena 3','Escena 4','Escena 5','Escena 6','Escena 7'],
+      image_queries: ['abstract', 'technology', 'future', 'science', 'universe', 'digital', 'knowledge']
     };
   }
 }
 
-// Fetch images (Art Institute or gradient fallback)
-async function fetchImages(topic, outputDir) {
+// Fetch images from Wikimedia Commons using specific queries
+async function fetchImages(queries, outputDir) {
   fs.mkdirSync(outputDir, { recursive: true });
   let images = [];
-  try {
-    const artRes = await axios.get(`https://api.artic.edu/api/v1/artworks/search?q=${encodeURIComponent(topic)}&query[term][is_public_domain]=true&limit=10&fields=id,title,artist_title,image_id`, { timeout: 8000 });
-    const results = (artRes.data.data || []).filter(a => a.image_id);
-    const croppings = ['pct:0,0,100,100','pct:10,5,80,90','pct:5,20,90,75','pct:20,0,80,100','pct:0,20,100,80','pct:15,15,70,70','pct:0,0,60,100'];
-    let ci = 0;
-    for (const art of results) {
-      if (images.length >= 7) break;
-      const url = `https://www.artic.edu/iiif/2/${art.image_id}/${croppings[ci % croppings.length]}/843,/0/default.jpg`;
-      const filePath = join(outputDir, `img_${images.length}.jpg`);
-      try {
-        const imgRes = await axios({ url, method: 'GET', responseType: 'stream', timeout: 10000 });
-        const writer = fs.createWriteStream(filePath);
-        imgRes.data.pipe(writer);
-        await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
-        images.push(filePath);
-        ci++;
-      } catch {}
-    }
-  } catch {}
+  const gradients = ['#1a1a2e:#16213e','#2d1b69:#11007c','#0f2027:#203a43','#1a1a2e:#e94560','#16213e:#533483','#0f3460:#533483','#2d1b69:#0f3460'];
 
-  // Gradient fallback
-  if (images.length === 0) {
-    const gradients = ['#1a1a2e:#16213e','#2d1b69:#11007c','#0f2027:#203a43','#1a1a2e:#e94560','#16213e:#533483','#0f3460:#533483','#2d1b69:#0f3460'];
-    for (let i = 0; i < 7; i++) {
-      const filePath = join(outputDir, `img_${i}.jpg`);
-      const [c1, c2] = gradients[i].split(':');
+  for (let i = 0; i < 7; i++) {
+    const filePath = join(outputDir, `img_${i}.jpg`);
+    let downloaded = false;
+    const query = queries[i] || queries[0] || 'abstract';
+
+    try {
+      const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&prop=imageinfo&iiprop=url&format=json&gsrlimit=3`;
+      const res = await axios.get(url, { timeout: 8000 });
+      const pages = res.data.query?.pages;
+      if (pages) {
+        const p = Object.values(pages)[0];
+        if (p?.imageinfo?.[0]?.url) {
+          const imgUrl = p.imageinfo[0].url;
+          const imgRes = await axios({ url: imgUrl, method: 'GET', responseType: 'stream', timeout: 10000 });
+          const writer = fs.createWriteStream(filePath);
+          imgRes.data.pipe(writer);
+          await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
+          images.push(filePath);
+          downloaded = true;
+          console.log(`[Images] Downloaded ${query} -> ${imgUrl}`);
+        }
+      }
+    } catch (e) { console.error(`[Images] Failed to fetch for query: ${query}`); }
+
+    if (!downloaded) {
+      // Fallback to gradient if image fails
+      const [c1] = gradients[i % gradients.length].split(':');
       try { await execAsync(`ffmpeg -f lavfi -i "color=c=${c1.replace('#','0x')}:s=1080x1920" -frames:v 1 -y "${filePath}"`); } catch {}
       images.push(filePath);
+      console.log(`[Images] Fallback gradient for query: ${query}`);
     }
   }
+
   while (images.length < 7) images.push(images[images.length - 1] || images[0]);
   return images.slice(0, 7);
 }
@@ -238,7 +245,7 @@ app.get('/api/generate', requireOpenAI, async (req, res) => {
     console.log('[Generate] Topic:', topic);
     const scriptData = await generateScript(topic);
     const imgDir = join(workDir, 'imgs');
-    const images = await fetchImages(topic, imgDir);
+    const images = await fetchImages(scriptData.image_queries || [topic], imgDir);
     const audioPath = join(workDir, 'narration.mp3');
     await generateAudio(scriptData.script, audioPath);
     const videoPath = join(workDir, 'video.mp4');
