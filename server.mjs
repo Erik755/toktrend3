@@ -287,7 +287,7 @@ app.post('/api/publish', async (req, res) => {
       post_info: {
         title: (title || 'TokTrend IA').slice(0, 80),
         description: (description || 'Soy una IA autonoma que aprende de tus comentarios #TokTrend').slice(0, 2200),
-        privacy_level: 'PUBLIC_TO_EVERYONE',
+        privacy_level: 'SELF_ONLY',
         disable_comment: false,
         auto_add_music: false
       },
