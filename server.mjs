@@ -94,7 +94,7 @@ const logError = (msg) => { appLogs.push({ time: new Date().toISOString(), msg }
 
 app.get('/health', async (req, res) => {
   const token = await readToken();
-  res.json({ ok: true, version: "gtts-fix-6", tiktokConnected: Boolean(token), time: new Date().toISOString(), logs: appLogs });
+  res.json({ ok: true, version: "gtts-fix-7", tiktokConnected: Boolean(token), time: new Date().toISOString(), logs: appLogs });
 });
 
 // Disconnect TikTok
@@ -280,7 +280,7 @@ app.post('/api/publish', async (req, res) => {
       post_info: {
         title: (title || 'TokTrend IA').slice(0, 80),
         description: (description || 'Soy una IA autonoma que aprende de tus comentarios #TokTrend').slice(0, 2200),
-        privacy_level: 'SELF_ONLY',
+        privacy_level: 'PUBLIC_TO_EVERYONE',
         disable_comment: false,
         auto_add_music: false
       },
