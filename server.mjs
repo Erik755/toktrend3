@@ -120,7 +120,7 @@ Devuelve SOLO JSON valido sin markdown:
 }`;
 
   const response = await openai.chat.completions.create({
-    model: process.env.AGENT_MODEL || 'gpt-4o',
+    model: process.env.AGENT_MODEL || 'gpt-3.5-turbo',
     messages: [{ role: 'user', content: prompt }],
     max_tokens: 900,
     temperature: 0.88
