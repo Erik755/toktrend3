@@ -11,8 +11,10 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import ffmpegPath from '@ffmpeg-installer/ffmpeg';
-import gTTS from 'gtts';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg');
+const gTTS = require('gtts');
 
 dotenv.config();
 const execAsync = promisify(exec);
