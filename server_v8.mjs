@@ -194,7 +194,16 @@ INSTRUCCIONES ESTRICTAS:
 async function fetchImages(queries, outputDir) {
   fs.mkdirSync(outputDir, { recursive: true });
   let images = [];
-  const gradients = ['#1a1a2e:#16213e','#2d1b69:#11007c','#0f2027:#203a43','#1a1a2e:#e94560','#16213e:#533483','#0f3460:#533483','#2d1b69:#0f3460'];
+  const colors = ['0xf97316', '0x14b8a6', '0x2563eb', '0xdb2777', '0x84cc16', '0xfacc15', '0x06b6d4'];
+  const wikiHeaders = {
+    'User-Agent': 'TokTrend/1.0 (https://toktrend3.onrender.com)',
+    'Accept': 'application/json,image/*,*/*'
+  };
+
+  async function createFallbackImage(filePath, i) {
+    const color = colors[i % colors.length];
+    await execAsync(`"${ffmpegPath.path}" -f lavfi -i "color=c=${color}:s=1080x1920" -frames:v 1 -y "${filePath}"`);
+  }
 
   for (let i = 0; i < 7; i++) {
     const filePath = join(outputDir, `img_${i}.jpg`);
@@ -202,30 +211,43 @@ async function fetchImages(queries, outputDir) {
     const query = queries[i] || queries[0] || 'abstract';
 
     try {
-      const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query + ' filetype:bitmap')}&gsrnamespace=6&prop=imageinfo&iiprop=url&iiurlwidth=800&format=json&gsrlimit=3`;
-      const res = await axios.get(url, { timeout: 8000 });
+      const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query + ' filetype:bitmap')}&gsrnamespace=6&prop=imageinfo&iiprop=url|mime|size&iiurlwidth=1080&format=json&gsrlimit=10`;
+      const res = await axios.get(url, { timeout: 15000, headers: wikiHeaders });
       const pages = res.data.query?.pages;
       if (pages) {
-        const p = Object.values(pages)[0];
-        if (p?.imageinfo?.[0]) {
-          const imgUrl = p.imageinfo[0].thumburl || p.imageinfo[0].url;
-          const imgRes = await axios({ url: imgUrl, method: 'GET', responseType: 'stream', timeout: 10000 });
-          const writer = fs.createWriteStream(filePath);
-          imgRes.data.pipe(writer);
-          await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
-          images.push(filePath);
-          downloaded = true;
-          console.log(`[Images] Downloaded ${query} -> ${imgUrl}`);
+        const candidates = Object.values(pages)
+          .map(p => p?.imageinfo?.[0])
+          .filter(info => info?.thumburl && /^image\/(jpeg|png|webp)$/i.test(info.mime || '') && info.width >= 600 && info.height >= 400);
+        for (const info of candidates) {
+          try {
+            const imgUrl = info.thumburl || info.url;
+            const imgRes = await axios({
+              url: imgUrl,
+              method: 'GET',
+              responseType: 'arraybuffer',
+              timeout: 20000,
+              headers: wikiHeaders,
+              maxRedirects: 5
+            });
+            const type = String(imgRes.headers?.['content-type'] || '');
+            if (!/^image\/(jpeg|png|webp)/i.test(type) || imgRes.data.byteLength < 5000) continue;
+            fs.writeFileSync(filePath, Buffer.from(imgRes.data));
+            images.push(filePath);
+            downloaded = true;
+            console.log(`[Images] Downloaded ${query} -> ${imgUrl}`);
+            break;
+          } catch (downloadErr) {
+            console.error(`[Images] Candidate failed for ${query}: ${downloadErr.message}`);
+          }
         }
       }
     } catch (e) { console.error(`[Images] Failed to fetch for query: ${query}`); }
 
     if (!downloaded) {
-      // Fallback to gradient if image fails
-      const [c1] = gradients[i % gradients.length].split(':');
-      try { await execAsync(`ffmpeg -f lavfi -i "color=c=${c1.replace('#','0x')}:s=1080x1920" -frames:v 1 -y "${filePath}"`); } catch {}
+      // Bright fallback, never black, so failed downloads are visible in the final video.
+      try { await createFallbackImage(filePath, i); } catch {}
       images.push(filePath);
-      console.log(`[Images] Fallback gradient for query: ${query}`);
+      console.log(`[Images] Fallback color for query: ${query}`);
     }
   }
 
@@ -310,14 +332,12 @@ async function buildVideo(images, audioPath, outputPath, totalSeconds = 29) {
   const lines = images.map(p => `file '${p}'\nduration ${perImage}`).join('\n') + `\nfile '${images[images.length-1]}'`;
   fs.writeFileSync(concatFile, lines);
 
-  // Noise filter ligero: fuerza bitrate adecuado sin zoompan (evita OOM)
-  // noise=alls=12 añade grano sutil que varía cada frame → encoder usa ~1500kbps
   const cmd = [
     `"${ffmpegPath.path}" -y`,
     `-f concat -safe 0 -i "${concatFile}"`,
     `-i "${audioPath}"`,
-    `-vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,noise=alls=12:allf=t"`,
-    `-c:v libx264 -preset faster -crf 20 -g 30 -bf 0 -threads 2`,
+    `-vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p"`,
+    `-c:v libx264 -preset faster -profile:v high -level 4.1 -crf 23 -maxrate 3500k -bufsize 7000k -g 30 -bf 0 -threads 2 -pix_fmt yuv420p`,
     `-c:a aac -b:a 128k -ar 44100 -ac 2`,
     `-shortest -movflags +faststart -t ${totalSeconds}`,
     `"${outputPath}"`
