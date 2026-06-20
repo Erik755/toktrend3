@@ -46,6 +46,10 @@ function getAIConfig() {
 
 const aiConfig = getAIConfig();
 const openai = new OpenAI({ apiKey: aiConfig.apiKey || 'missing-ai-key', baseURL: aiConfig.baseURL });
+const ttsApiKey = process.env.TTS_API_KEY || process.env.OPENAI_API_KEY;
+const ttsModel = process.env.TTS_MODEL || 'tts-1-hd';
+const ttsVoice = process.env.TTS_VOICE || 'onyx';
+const ttsClient = ttsApiKey ? new OpenAI({ apiKey: ttsApiKey }) : null;
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json({ limit: '10mb' }));
@@ -269,8 +273,43 @@ async function fetchImages(queries, outputDir) {
   return images.slice(0, 7);
 }
 
-// TTS via OpenAI (fiable, voz dulce 'nova')
-async function generateAudio(script, outputPath) {
+async function concatenateMp3Files(tempFiles, outputPath) {
+  if (tempFiles.length === 1) {
+    fs.renameSync(tempFiles[0], outputPath);
+    return;
+  }
+
+  const { createRequire } = await import('module');
+  const req = createRequire(import.meta.url);
+  const ffmpegPath = req('@ffmpeg-installer/ffmpeg').path;
+  const { execFile } = req('child_process');
+  const listFile = outputPath + '.list.txt';
+  fs.writeFileSync(listFile, tempFiles.map(f => `file '${f}'`).join('\n'));
+  await new Promise((resolve, reject) => {
+    execFile(ffmpegPath, ['-f','concat','-safe','0','-i',listFile,'-c','copy',outputPath,'-y'], (err) => {
+      tempFiles.forEach(f => { try { fs.unlinkSync(f); } catch {} });
+      try { fs.unlinkSync(listFile); } catch {}
+      err ? reject(err) : resolve();
+    });
+  });
+}
+
+async function generateProfessionalAudio(script, outputPath) {
+  if (!ttsClient) throw new Error('TTS_API_KEY or OPENAI_API_KEY missing');
+  const response = await ttsClient.audio.speech.create({
+    model: ttsModel,
+    voice: ttsVoice,
+    input: script,
+    response_format: 'mp3',
+    speed: Number(process.env.TTS_SPEED || 0.96)
+  });
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length < 1000) throw new Error('Professional TTS returned empty audio');
+  fs.writeFileSync(outputPath, buffer);
+  console.log(`[TTS] Audio profesional generado: ${ttsModel}/${ttsVoice}`);
+}
+
+async function generateGoogleFallbackAudio(script, outputPath) {
   function splitText(txt, maxLen = 180) {
     const words = txt.split(' ');
     const chunks = [];
@@ -319,24 +358,21 @@ async function generateAudio(script, outputPath) {
     if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 500));
   }
 
-  if (tempFiles.length === 1) {
-    fs.renameSync(tempFiles[0], outputPath);
-  } else {
-    const { createRequire } = await import('module');
-    const req = createRequire(import.meta.url);
-    const ffmpegPath = req('@ffmpeg-installer/ffmpeg').path;
-    const { execFile } = req('child_process');
-    const listFile = outputPath + '.list.txt';
-    fs.writeFileSync(listFile, tempFiles.map(f => `file '${f}'`).join('\n'));
-    await new Promise((resolve, reject) => {
-      execFile(ffmpegPath, ['-f','concat','-safe','0','-i',listFile,'-c','copy',outputPath,'-y'], (err) => {
-        tempFiles.forEach(f => { try { fs.unlinkSync(f); } catch {} });
-        try { fs.unlinkSync(listFile); } catch {}
-        err ? reject(err) : resolve();
-      });
-    });
+  await concatenateMp3Files(tempFiles, outputPath);
+  console.log('[TTS] Audio fallback generado:', outputPath);
+}
+
+// Professional TTS first; Google fallback only if the paid voice is unavailable.
+async function generateAudio(script, outputPath) {
+  if (process.env.TTS_PROVIDER !== 'google') {
+    try {
+      await generateProfessionalAudio(script, outputPath);
+      return;
+    } catch (err) {
+      console.error('[TTS] Professional voice failed, using fallback:', err.message);
+    }
   }
-  console.log('[TTS] Audio generado:', outputPath);
+  await generateGoogleFallbackAudio(script, outputPath);
 }
 
 // Build MP4 with ffmpeg
