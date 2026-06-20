@@ -383,8 +383,35 @@ app.post('/api/publish', async (req, res) => {
     }
     console.log(`[Publish] FILE_UPLOAD ${(videoSize/1024/1024).toFixed(1)}MB en ${totalChunks} chunks`);
 
-    // Step 1: Init upload
-    const initPayload = {
+    async function uploadChunks(uploadUrl) {
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * chunkSize;
+        const end = i === totalChunks - 1 ? videoSize : Math.min(start + chunkSize, videoSize);
+        const chunk = videoBuffer.slice(start, end);
+        const rangeHeader = `bytes ${start}-${end - 1}/${videoSize}`;
+        console.log(`[Publish] Chunk ${i+1}/${totalChunks} ${rangeHeader}`);
+        await axios.put(uploadUrl, chunk, {
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Content-Range': rangeHeader,
+            'Content-Length': chunk.length
+          },
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity
+        });
+      }
+    }
+
+    const sourceInfo = {
+      source: 'FILE_UPLOAD',
+      video_size: videoSize,
+      chunk_size: chunkSize,
+      total_chunk_count: totalChunks
+    };
+
+    // Step 1: Try Direct Post first. If TikTok blocks unaudited direct posts,
+    // fall back to Inbox Upload so the creator can finish posting in TikTok.
+    const directPayload = {
       post_info: {
         title: (title || 'TokTrend IA').slice(0, 80),
         description: (description || 'Soy una IA autonoma que aprende de tus comentarios #TokTrend').slice(0, 2200),
@@ -392,46 +419,41 @@ app.post('/api/publish', async (req, res) => {
         disable_comment: false,
         auto_add_music: false
       },
-      source_info: {
-        source: 'FILE_UPLOAD',
-        video_size: videoSize,
-        chunk_size: chunkSize,
-        total_chunk_count: totalChunks
-      }
+      source_info: sourceInfo
     };
 
-    const initResp = await axios.post('https://open.tiktokapis.com/v2/post/publish/video/init/', initPayload, {
-      headers: { 'Authorization': `Bearer ${tokenData.access_token}`, 'Content-Type': 'application/json; charset=utf-8' }
-    });
-
-    console.log('[Publish] Init:', JSON.stringify(initResp.data));
-    if (initResp.data.error?.code && initResp.data.error.code !== 'ok') throw new Error(JSON.stringify(initResp.data.error));
+    let initResp;
+    let method = 'DIRECT_POST';
+    try {
+      initResp = await axios.post('https://open.tiktokapis.com/v2/post/publish/video/init/', directPayload, {
+        headers: { 'Authorization': `Bearer ${tokenData.access_token}`, 'Content-Type': 'application/json; charset=utf-8' }
+      });
+      console.log('[Publish] Direct init:', JSON.stringify(initResp.data));
+      if (initResp.data.error?.code && initResp.data.error.code !== 'ok') throw new Error(JSON.stringify(initResp.data.error));
+    } catch (directErr) {
+      const directData = directErr.response?.data || null;
+      const directCode = directData?.error?.code;
+      const directMsg = directData ? JSON.stringify(directData) : directErr.message;
+      if (directCode !== 'unaudited_client_can_only_post_to_private_accounts') throw new Error(directMsg);
+      console.log('[Publish] Direct Post bloqueado por TikTok; usando Inbox Upload.');
+      method = 'INBOX_UPLOAD';
+      initResp = await axios.post('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', { source_info: sourceInfo }, {
+        headers: { 'Authorization': `Bearer ${tokenData.access_token}`, 'Content-Type': 'application/json; charset=utf-8' }
+      });
+      console.log('[Publish] Inbox init:', JSON.stringify(initResp.data));
+      if (initResp.data.error?.code && initResp.data.error.code !== 'ok') throw new Error(JSON.stringify(initResp.data.error));
+    }
 
     const publishId = initResp.data.data?.publish_id;
     const uploadUrl = initResp.data.data?.upload_url;
     if (!uploadUrl) throw new Error('No upload_url received from TikTok');
 
     // Step 2: Upload chunks
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * chunkSize;
-      const end = i === totalChunks - 1 ? videoSize : Math.min(start + chunkSize, videoSize);
-      const chunk = videoBuffer.slice(start, end);
-      const rangeHeader = `bytes ${start}-${end - 1}/${videoSize}`;
-      console.log(`[Publish] Chunk ${i+1}/${totalChunks} ${rangeHeader}`);
-      await axios.put(uploadUrl, chunk, {
-        headers: {
-          'Content-Type': 'video/mp4',
-          'Content-Range': rangeHeader,
-          'Content-Length': chunk.length
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity
-      });
-    }
+    await uploadChunks(uploadUrl);
 
     console.log('[Publish] Upload completo, publishId:', publishId);
-    if (db && publishId) { try { await db.collection('published_videos').doc(publishId).set({ sessionId, title: title||'', publishedAt: Date.now() }); } catch {} }
-    res.json({ ok: true, publishId, method: 'FILE_UPLOAD' });
+    if (db && publishId) { try { await db.collection('published_videos').doc(publishId).set({ sessionId, title: title||'', method, publishedAt: Date.now() }); } catch {} }
+    res.json({ ok: true, publishId, method, message: method === 'INBOX_UPLOAD' ? 'Video subido a TikTok Inbox. Abre TikTok para revisar y publicar.' : 'Video publicado en TikTok.' });
 
   } catch (err) {
     const msg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
@@ -482,9 +504,9 @@ app.get('/api/tiktok/login', async (req, res) => {
   const state = crypto.randomBytes(8).toString('hex');
   const { verifier, challenge } = generatePKCE();
   storeVerifier(state, verifier);
-  // Removido video.upload ya que está obsoleto en la v2 y suele dar invalid_scope.
-  // Removido comment.list,comment.create porque también arrojan invalid_scope si la app de TikTok no tiene esos productos aprobados.
-  const scope = 'user.info.basic,video.publish';
+  // Direct Post usa video.publish; Inbox Upload usa video.upload.
+  // No pedimos permisos de comentarios porque requieren productos aprobados aparte.
+  const scope = 'user.info.basic,video.publish,video.upload';
   res.redirect(`https://www.tiktok.com/v2/auth/authorize?client_key=${clientKey}&response_type=code&scope=${encodeURIComponent(scope)}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}&code_challenge=${challenge}&code_challenge_method=S256`);
 });
 
