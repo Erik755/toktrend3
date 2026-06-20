@@ -179,6 +179,10 @@ function fallbackScriptData(topic) {
 
 function normalizeScriptData(data, topic) {
   const fallback = fallbackScriptData(topic);
+  if (data && typeof data === 'object') {
+    data.script = data.script || data.guion || data.narracion || data.dialogo;
+    data.image_queries = data.image_queries || data.consultas_imagen || data.busquedas_imagenes;
+  }
   const normalized = { ...fallback, ...(data && typeof data === 'object' ? data : {}) };
   normalized.title = String(normalized.title || fallback.title).slice(0, 80);
   normalized.script = String(normalized.script || fallback.script);
@@ -202,7 +206,8 @@ INSTRUCCIONES ESTRICTAS:
 - Tono: apasionado, cercano, culto y magnetico. Nunca aburrido. Habla directamente al espectador.
 - Termina con: "Dejame tu comentario, aprendo de ti."
 
-    Devuelve SOLO este JSON valido, sin markdown, sin explicaciones y sin texto fuera del objeto:
+    Devuelve SOLO este JSON valido, sin markdown, sin explicaciones y sin texto fuera del objeto.
+    Las claves deben llamarse EXACTAMENTE: title, script, description, hashtags, shots, image_queries.
     {
       "title": "Titulo del video (max 80 chars)",
       "script": "El guion completo narrado en primera persona (120-140 palabras)",
