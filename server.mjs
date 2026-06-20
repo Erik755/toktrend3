@@ -68,8 +68,43 @@ async function readToken() {
   return null;
 }
 async function writeToken(data) {
-  try { fs.writeFileSync(TIKTOK_TOKEN_FILE, JSON.stringify(data, null, 2)); } catch {}
-  if (db) { try { await db.collection('tokens').doc('tiktok').set(data); } catch {} }
+  const withTs = { ...data, saved_at: Math.floor(Date.now() / 1000) };
+  try { fs.writeFileSync(TIKTOK_TOKEN_FILE, JSON.stringify(withTs, null, 2)); } catch {}
+  if (db) { try { await db.collection('tokens').doc('tiktok').set(withTs); } catch {} }
+}
+
+// Auto-refresh token if expired
+async function getValidToken() {
+  let tokenData = await readToken();
+  if (!tokenData?.access_token) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const savedAt = tokenData.saved_at || 0;
+  const expiresIn = tokenData.expires_in || 86400;
+  const isExpired = now >= (savedAt + expiresIn - 300); // refresh 5 min before expiry
+  if (isExpired && tokenData.refresh_token) {
+    console.log('[Token] Access token expired, attempting refresh...');
+    try {
+      const params = new URLSearchParams({
+        client_key: process.env.TIKTOK_CLIENT_KEY,
+        client_secret: process.env.TIKTOK_CLIENT_SECRET,
+        grant_type: 'refresh_token',
+        refresh_token: tokenData.refresh_token
+      });
+      const { data } = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', params.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cache-Control': 'no-cache' }
+      });
+      if (!data.error) {
+        await writeToken(data);
+        console.log('[Token] Refresh successful.');
+        return data;
+      } else {
+        console.error('[Token Refresh Error]', data.error, data.error_description);
+      }
+    } catch (err) {
+      console.error('[Token Refresh Error]', err.response?.data || err.message);
+    }
+  }
+  return isExpired ? null : tokenData;
 }
 async function deleteToken() {
   try { if (fs.existsSync(TIKTOK_TOKEN_FILE)) fs.unlinkSync(TIKTOK_TOKEN_FILE); } catch {}
@@ -94,7 +129,10 @@ const logError = (msg) => { appLogs.push({ time: new Date().toISOString(), msg }
 
 app.get('/health', async (req, res) => {
   const token = await readToken();
-  res.json({ ok: true, version: "openai-tts-fix-10", tiktokConnected: Boolean(token), time: new Date().toISOString(), logs: appLogs });
+  const now = Math.floor(Date.now() / 1000);
+  const tokenExpiry = token?.saved_at && token?.expires_in ? token.saved_at + token.expires_in : null;
+  const tokenValid = token && (!tokenExpiry || now < tokenExpiry - 60);
+  res.json({ ok: true, version: "auto-refresh-11", tiktokConnected: Boolean(token), tokenValid: tokenValid, tokenExpiresAt: tokenExpiry ? new Date(tokenExpiry * 1000).toISOString() : null, time: new Date().toISOString(), logs: appLogs });
 });
 
 // Disconnect TikTok
@@ -264,7 +302,7 @@ app.post('/api/publish', async (req, res) => {
   try {
     const { sessionId, title, description } = req.body;
     if (!sessionId) return res.status(400).json({ ok: false, error: 'Missing sessionId.' });
-    const tokenData = await readToken();
+    const tokenData = await getValidToken();
     if (!tokenData?.access_token) return res.status(401).json({ ok: false, error: 'TikTok no conectado.' });
 
     const protocol = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
@@ -306,7 +344,7 @@ app.post('/api/tiktok/reply-comments', requireOpenAI, async (req, res) => {
   try {
     const { videoId } = req.body;
     if (!videoId) return res.status(400).json({ ok: false, error: 'Missing videoId.' });
-    const tokenData = await readToken();
+    const tokenData = await getValidToken();
     if (!tokenData?.access_token) return res.status(401).json({ ok: false, error: 'TikTok no conectado.' });
 
     const commentsRes = await axios.get('https://open.tiktokapis.com/v2/video/comment/list/', {
