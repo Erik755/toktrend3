@@ -375,9 +375,9 @@ app.post('/api/publish', async (req, res) => {
 
     const videoBuffer = fs.readFileSync(videoPath);
     const videoSize = videoBuffer.length;
-   let chunkSize = 10 * 1024 * 1024; // 10MB chunks
-    let totalChunks = Math.ceil(videoSize / chunkSize);
-    if (totalChunks <= 1) {
+    let chunkSize = 10 * 1024 * 1024; // 10MB chunks
+    let totalChunks = Math.floor(videoSize / chunkSize);
+    if (videoSize <= chunkSize) {
       totalChunks = 1;
       chunkSize = videoSize; // si cabe en 1 trozo, el tamaño debe coincidir exacto
     }
@@ -414,7 +414,7 @@ app.post('/api/publish', async (req, res) => {
     // Step 2: Upload chunks
     for (let i = 0; i < totalChunks; i++) {
       const start = i * chunkSize;
-      const end = Math.min(start + chunkSize, videoSize);
+      const end = i === totalChunks - 1 ? videoSize : Math.min(start + chunkSize, videoSize);
       const chunk = videoBuffer.slice(start, end);
       const rangeHeader = `bytes ${start}-${end - 1}/${videoSize}`;
       console.log(`[Publish] Chunk ${i+1}/${totalChunks} ${rangeHeader}`);
