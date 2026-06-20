@@ -31,7 +31,21 @@ try {
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+function getAIConfig() {
+  const apiKey = process.env.AI_API_KEY || process.env.GROQ_API_KEY || process.env.TOGETHER_API_KEY || process.env.OPENAI_API_KEY;
+  const baseURL = process.env.AI_BASE_URL
+    || (process.env.GROQ_API_KEY ? 'https://api.groq.com/openai/v1' : null)
+    || (process.env.TOGETHER_API_KEY ? 'https://api.together.xyz/v1' : null)
+    || undefined;
+  const model = process.env.AGENT_MODEL
+    || (process.env.GROQ_API_KEY ? 'openai/gpt-oss-120b' : null)
+    || (process.env.TOGETHER_API_KEY ? 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo' : null)
+    || 'gpt-4.1-mini';
+  return { apiKey, baseURL, model };
+}
+
+const aiConfig = getAIConfig();
+const openai = new OpenAI({ apiKey: aiConfig.apiKey || 'missing-ai-key', baseURL: aiConfig.baseURL });
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json({ limit: '10mb' }));
@@ -124,8 +138,8 @@ async function saveUsedTopic(id) {
   if (db) { try { await db.collection('used_topics').doc(String(id)).set({ usedAt: now }); } catch {} }
 }
 
-function requireOpenAI(req, res, next) {
-  if (!process.env.OPENAI_API_KEY) return res.status(500).json({ ok: false, error: 'OPENAI_API_KEY missing.' });
+function requireAI(req, res, next) {
+  if (!aiConfig.apiKey) return res.status(500).json({ ok: false, error: 'AI key missing. Set AI_API_KEY, GROQ_API_KEY, TOGETHER_API_KEY, or OPENAI_API_KEY.' });
   next();
 }
 
@@ -138,7 +152,7 @@ app.get('/health', async (req, res) => {
   const now = Math.floor(Date.now() / 1000);
   const tokenExpiry = token?.saved_at && token?.expires_in ? token.saved_at + token.expires_in : null;
   const tokenValid = token && (!tokenExpiry || now < tokenExpiry - 60);
-  res.json({ ok: true, version: "gtts-v8-upload-18", tiktokConnected: Boolean(token), tokenValid: tokenValid, tokenExpiresAt: tokenExpiry ? new Date(tokenExpiry * 1000).toISOString() : null, time: new Date().toISOString(), logs: appLogs });
+  res.json({ ok: true, version: "gtts-v8-upload-18", aiModel: aiConfig.model, aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1', tiktokConnected: Boolean(token), tokenValid: tokenValid, tokenExpiresAt: tokenExpiry ? new Date(tokenExpiry * 1000).toISOString() : null, time: new Date().toISOString(), logs: appLogs });
 });
 
 // Disconnect TikTok
@@ -170,7 +184,7 @@ INSTRUCCIONES ESTRICTAS:
     }`;
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o',
+    model: aiConfig.model,
     messages: [{ role: 'user', content: prompt }],
     max_tokens: 900,
     temperature: 0.88
@@ -348,7 +362,7 @@ async function buildVideo(images, audioPath, outputPath, totalSeconds = 29) {
 }
 
 // Main generate endpoint
-app.get('/api/generate', requireOpenAI, async (req, res) => {
+app.get('/api/generate', requireAI, async (req, res) => {
   try {
     const topic = (req.query.q || 'Historia del arte').slice(0, 200);
     const sessionId = crypto.randomBytes(8).toString('hex');
@@ -483,7 +497,7 @@ app.post('/api/publish', async (req, res) => {
 });
 
 // Reply comments
-app.post('/api/tiktok/reply-comments', requireOpenAI, async (req, res) => {
+app.post('/api/tiktok/reply-comments', requireAI, async (req, res) => {
   try {
     const { videoId } = req.body;
     if (!videoId) return res.status(400).json({ ok: false, error: 'Missing videoId.' });
@@ -505,7 +519,7 @@ app.post('/api/tiktok/reply-comments', requireOpenAI, async (req, res) => {
     let replied = 0;
     for (const comment of pending.slice(0, 5)) {
       try {
-        const aiRes = await openai.chat.completions.create({ model: process.env.AGENT_MODEL || 'gpt-4.1', messages: [{ role: 'user', content: `Eres una IA autonoma y carinosa en TikTok. Responde dulce, breve y personal (max 150 chars): "${comment.text}". Solo la respuesta.` }], max_tokens: 80, temperature: 0.9 });
+        const aiRes = await openai.chat.completions.create({ model: aiConfig.model, messages: [{ role: 'user', content: `Eres una IA autonoma y carinosa en TikTok. Responde dulce, breve y personal (max 150 chars): "${comment.text}". Solo la respuesta.` }], max_tokens: 80, temperature: 0.9 });
         const replyText = (aiRes.choices[0]?.message?.content?.trim() || '¡Gracias! Aprendo de ti.').slice(0, 150);
         await axios.post('https://open.tiktokapis.com/v2/video/comment/reply/', { video_id: videoId, parent_comment_id: comment.id, text: replyText }, { headers: { 'Authorization': `Bearer ${tokenData.access_token}`, 'Content-Type': 'application/json' } });
         if (db) { try { await db.collection('replied_comments').doc(comment.id).set({ videoId, repliedAt: Date.now() }); } catch {} }
