@@ -150,13 +150,14 @@ function requireAI(req, res, next) {
 // Health
 const appLogs = [];
 const logError = (msg) => { appLogs.push({ time: new Date().toISOString(), msg }); if(appLogs.length > 20) appLogs.shift(); console.error(msg); };
+let lastTtsProvider = 'none';
 
 app.get('/health', async (req, res) => {
   const token = await readToken();
   const now = Math.floor(Date.now() / 1000);
   const tokenExpiry = token?.saved_at && token?.expires_in ? token.saved_at + token.expires_in : null;
   const tokenValid = token && (!tokenExpiry || now < tokenExpiry - 60);
-  res.json({ ok: true, version: "gtts-v8-upload-18", aiModel: aiConfig.model, aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1', ttsModel, ttsVoice, tiktokConnected: Boolean(token), tokenValid: tokenValid, tokenExpiresAt: tokenExpiry ? new Date(tokenExpiry * 1000).toISOString() : null, time: new Date().toISOString(), logs: appLogs });
+  res.json({ ok: true, version: "gtts-v8-upload-18", aiModel: aiConfig.model, aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1', ttsModel, ttsVoice, ttsConfigured: Boolean(ttsClient), lastTtsProvider, tiktokConnected: Boolean(token), tokenValid: tokenValid, tokenExpiresAt: tokenExpiry ? new Date(tokenExpiry * 1000).toISOString() : null, time: new Date().toISOString(), logs: appLogs });
 });
 
 // Disconnect TikTok
@@ -340,6 +341,7 @@ async function generateProfessionalAudio(script, outputPath) {
   const buffer = Buffer.from(await response.arrayBuffer());
   if (buffer.length < 1000) throw new Error('Professional TTS returned empty audio');
   fs.writeFileSync(outputPath, buffer);
+  lastTtsProvider = `openai:${ttsModel}/${ttsVoice}`;
   console.log(`[TTS] Audio profesional generado: ${ttsModel}/${ttsVoice}`);
 }
 
@@ -393,6 +395,7 @@ async function generateGoogleFallbackAudio(script, outputPath) {
   }
 
   await concatenateMp3Files(tempFiles, outputPath);
+  lastTtsProvider = 'google-fallback';
   console.log('[TTS] Audio fallback generado:', outputPath);
 }
 
@@ -403,7 +406,7 @@ async function generateAudio(script, outputPath) {
       await generateProfessionalAudio(script, outputPath);
       return;
     } catch (err) {
-      console.error('[TTS] Professional voice failed, using fallback:', err.message);
+      logError('[TTS Warning] Professional voice failed, using fallback: ' + err.message);
     }
   }
   await generateGoogleFallbackAudio(script, outputPath);
@@ -457,6 +460,7 @@ app.get('/api/generate', requireAI, async (req, res) => {
       ok: true,
       sessionId,
       videoUrl: `/videos/${sessionId}/video.mp4`,
+      ttsProvider: lastTtsProvider,
       scriptData,
       slides: images.map((_, i) => ({ url: `/videos/${sessionId}/imgs/img_${i}.jpg`, description: scriptData.shots?.[i] || `Escena ${i+1}`, duration: 4 }))
     });
@@ -487,6 +491,40 @@ app.post('/api/publish', async (req, res) => {
     }
     console.log(`[Publish] FILE_UPLOAD ${(videoSize/1024/1024).toFixed(1)}MB en ${totalChunks} chunks`);
 
+    function shortPublishError(err) {
+      const status = err.response?.status;
+      const body = typeof err.response?.data === 'string' ? err.response.data : JSON.stringify(err.response?.data || '');
+      if (status === 504 || /504 Gateway Timeout/i.test(body)) return 'TikTok upload timeout. Reintentando subida del fragmento.';
+      if (body && body.length > 300) return body.slice(0, 300);
+      return body || err.message;
+    }
+
+    async function putChunkWithRetry(uploadUrl, chunk, rangeHeader) {
+      let lastErr;
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        try {
+          await axios.put(uploadUrl, chunk, {
+            headers: {
+              'Content-Type': 'video/mp4',
+              'Content-Range': rangeHeader,
+              'Content-Length': chunk.length
+            },
+            timeout: 120000,
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
+          });
+          return;
+        } catch (err) {
+          lastErr = err;
+          const retryable = [408, 425, 429, 500, 502, 503, 504].includes(err.response?.status) || /timeout|ECONNRESET|ETIMEDOUT/i.test(err.message);
+          console.error(`[Publish] Chunk retry ${attempt}/4: ${shortPublishError(err)}`);
+          if (!retryable || attempt === 4) break;
+          await new Promise(r => setTimeout(r, attempt * 3000));
+        }
+      }
+      throw lastErr;
+    }
+
     async function uploadChunks(uploadUrl) {
       for (let i = 0; i < totalChunks; i++) {
         const start = i * chunkSize;
@@ -494,15 +532,7 @@ app.post('/api/publish', async (req, res) => {
         const chunk = videoBuffer.slice(start, end);
         const rangeHeader = `bytes ${start}-${end - 1}/${videoSize}`;
         console.log(`[Publish] Chunk ${i+1}/${totalChunks} ${rangeHeader}`);
-        await axios.put(uploadUrl, chunk, {
-          headers: {
-            'Content-Type': 'video/mp4',
-            'Content-Range': rangeHeader,
-            'Content-Length': chunk.length
-          },
-          maxContentLength: Infinity,
-          maxBodyLength: Infinity
-        });
+        await putChunkWithRetry(uploadUrl, chunk, rangeHeader);
       }
     }
 
@@ -560,7 +590,10 @@ app.post('/api/publish', async (req, res) => {
     res.json({ ok: true, publishId, method, message: method === 'INBOX_UPLOAD' ? 'Video subido a TikTok Inbox. Abre TikTok para revisar y publicar.' : 'Video publicado en TikTok.' });
 
   } catch (err) {
-    const msg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    const raw = err.response?.data ? (typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data)) : err.message;
+    const msg = /504 Gateway Timeout|CloudFront/i.test(raw)
+      ? 'TikTok no respondio a tiempo durante la subida. Intenta publicar de nuevo el mismo video.'
+      : raw;
     logError('[Publish Error] ' + msg);
     res.status(500).json({ ok: false, error: msg });
   }
