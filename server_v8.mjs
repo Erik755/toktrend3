@@ -38,7 +38,7 @@ function getAIConfig() {
     || (process.env.TOGETHER_API_KEY ? 'https://api.together.xyz/v1' : null)
     || undefined;
   const model = process.env.AGENT_MODEL
-    || (process.env.GROQ_API_KEY ? 'openai/gpt-oss-120b' : null)
+    || (process.env.GROQ_API_KEY ? 'llama-3.3-70b-versatile' : null)
     || (process.env.TOGETHER_API_KEY ? 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo' : null)
     || 'gpt-4.1-mini';
   return { apiKey, baseURL, model };
@@ -169,11 +169,11 @@ app.post('/api/tiktok/disconnect', async (req, res) => {
 function fallbackScriptData(topic) {
   return {
     title: topic.slice(0, 80),
-    script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. Hoy quiero hablarte de ${topic}. Un tema fascinante que merece toda tu atencion. Dejame tu comentario, aprendo de ti.`,
+    script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. Hoy quiero hablarte de ${topic}, porque detras de cada detalle hay una historia que puede despertar curiosidad, emocion y conversacion. Imagina la escena: imagenes potentes, ritmo dinamico y una idea clara que atrapa desde el primer segundo. Lo importante no es solo mostrar algo bonito, sino convertirlo en una experiencia breve, intensa y facil de recordar. Cada palabra debe empujar al espectador a quedarse, sentir algo y participar. Por eso este video mezcla datos, energia y una invitacion directa a opinar. Si este tema te mueve, si tienes una experiencia o una pregunta, no te quedes mirando en silencio. Dejame tu comentario, aprendo de ti.`,
     description: `${topic} - IA autonoma que aprende de tus comentarios. #TokTrend`,
     hashtags: ['#TokTrend','#IA','#Viral','#Aprende','#Cultura'],
-    shots: ['Escena 1','Escena 2','Escena 3','Escena 4','Escena 5','Escena 6','Escena 7'],
-    image_queries: ['abstract', 'technology', 'future', 'science', 'universe', 'digital', 'knowledge']
+    shots: [`Plano cinematografico sobre ${topic}`,'Detalle visual del tema','Escena dinamica con movimiento','Primer plano emocional','Ambiente moderno y profesional','Momento aspiracional','Cierre visual impactante'],
+    image_queries: [topic, `${topic} detail`, `${topic} motion`, `${topic} close up`, `${topic} modern`, `${topic} lifestyle`, `${topic} cinematic`]
   };
 }
 
@@ -182,6 +182,7 @@ function normalizeScriptData(data, topic) {
   const normalized = { ...fallback, ...(data && typeof data === 'object' ? data : {}) };
   normalized.title = String(normalized.title || fallback.title).slice(0, 80);
   normalized.script = String(normalized.script || fallback.script);
+  if (normalized.script.split(/\s+/).filter(Boolean).length < 95) normalized.script = fallback.script;
   normalized.description = String(normalized.description || fallback.description).slice(0, 300);
   normalized.hashtags = Array.isArray(normalized.hashtags) && normalized.hashtags.length ? normalized.hashtags : fallback.hashtags;
   normalized.shots = Array.isArray(normalized.shots) && normalized.shots.length >= 7 ? normalized.shots.slice(0, 7) : fallback.shots;
@@ -190,17 +191,18 @@ function normalizeScriptData(data, topic) {
 }
 
 async function generateScript(topic) {
-  const prompt = `Eres un orador de primer nivel mundial, locutor apasionado y comunicador viral de TikTok.
+const prompt = `Eres un orador de primer nivel mundial, locutor apasionado y comunicador viral de TikTok.
 Crea un guion completo en espanol para un video de TikTok de 29 segundos sobre el tema: "${topic}".
 
 INSTRUCCIONES ESTRICTAS:
 - Empieza SIEMPRE con: "Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios."
 - Desarrolla el tema con elocuencia, datos fascinantes y ganchos emocionales durante los 29 segundos completos.
 - El dialogo debe ser continuo, fluido y ocupar toda la duracion. Aproximadamente 120-140 palabras.
+- El campo "script" NUNCA puede ser un resumen corto. Debe tener minimo 110 palabras.
 - Tono: apasionado, cercano, culto y magnetico. Nunca aburrido. Habla directamente al espectador.
 - Termina con: "Dejame tu comentario, aprendo de ti."
 
-    Devuelve SOLO JSON valido sin markdown:
+    Devuelve SOLO este JSON valido, sin markdown, sin explicaciones y sin texto fuera del objeto:
     {
       "title": "Titulo del video (max 80 chars)",
       "script": "El guion completo narrado en primera persona (120-140 palabras)",
