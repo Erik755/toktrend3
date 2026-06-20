@@ -166,6 +166,29 @@ app.post('/api/tiktok/disconnect', async (req, res) => {
 });
 
 // Generate script (world-class speaker)
+function fallbackScriptData(topic) {
+  return {
+    title: topic.slice(0, 80),
+    script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. Hoy quiero hablarte de ${topic}. Un tema fascinante que merece toda tu atencion. Dejame tu comentario, aprendo de ti.`,
+    description: `${topic} - IA autonoma que aprende de tus comentarios. #TokTrend`,
+    hashtags: ['#TokTrend','#IA','#Viral','#Aprende','#Cultura'],
+    shots: ['Escena 1','Escena 2','Escena 3','Escena 4','Escena 5','Escena 6','Escena 7'],
+    image_queries: ['abstract', 'technology', 'future', 'science', 'universe', 'digital', 'knowledge']
+  };
+}
+
+function normalizeScriptData(data, topic) {
+  const fallback = fallbackScriptData(topic);
+  const normalized = { ...fallback, ...(data && typeof data === 'object' ? data : {}) };
+  normalized.title = String(normalized.title || fallback.title).slice(0, 80);
+  normalized.script = String(normalized.script || fallback.script);
+  normalized.description = String(normalized.description || fallback.description).slice(0, 300);
+  normalized.hashtags = Array.isArray(normalized.hashtags) && normalized.hashtags.length ? normalized.hashtags : fallback.hashtags;
+  normalized.shots = Array.isArray(normalized.shots) && normalized.shots.length >= 7 ? normalized.shots.slice(0, 7) : fallback.shots;
+  normalized.image_queries = Array.isArray(normalized.image_queries) && normalized.image_queries.length >= 7 ? normalized.image_queries.slice(0, 7) : fallback.image_queries;
+  return normalized;
+}
+
 async function generateScript(topic) {
   const prompt = `Eres un orador de primer nivel mundial, locutor apasionado y comunicador viral de TikTok.
 Crea un guion completo en espanol para un video de TikTok de 29 segundos sobre el tema: "${topic}".
@@ -198,7 +221,7 @@ INSTRUCCIONES ESTRICTAS:
   const jsonStart = text.indexOf('{');
   const jsonEnd = text.lastIndexOf('}');
   if (jsonStart >= 0 && jsonEnd > jsonStart) text = text.slice(jsonStart, jsonEnd + 1);
-  try { return JSON.parse(text); }
+  try { return normalizeScriptData(JSON.parse(text), topic); }
   catch (err) {
     logError(`[AI Parse Warning] ${err.message}. Raw: ${text.slice(0, 300)}`);
     return {
