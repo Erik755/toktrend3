@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
-  "scripts": {
-    "start": "node server.mjs",
-    "dev": "node --watch server.mjs"
+ "scripts": {
+  "start": "node server_v8.mjs",
+  "dev": "node --watch server_v8.mjs"
+},
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
