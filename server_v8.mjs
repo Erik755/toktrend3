@@ -191,8 +191,7 @@ INSTRUCCIONES ESTRICTAS:
     model: aiConfig.model,
     messages: [{ role: 'user', content: prompt }],
     max_tokens: 900,
-    temperature: 0.88,
-    response_format: { type: 'json_object' }
+    temperature: 0.88
   });
   let text = response.choices[0]?.message?.content?.trim() || '{}';
   text = text.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
