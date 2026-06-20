@@ -94,7 +94,7 @@ const logError = (msg) => { appLogs.push({ time: new Date().toISOString(), msg }
 
 app.get('/health', async (req, res) => {
   const token = await readToken();
-  res.json({ ok: true, version: "gtts-fix-9", tiktokConnected: Boolean(token), time: new Date().toISOString(), logs: appLogs });
+  res.json({ ok: true, version: "openai-tts-fix-10", tiktokConnected: Boolean(token), time: new Date().toISOString(), logs: appLogs });
 });
 
 // Disconnect TikTok
@@ -189,27 +189,17 @@ async function fetchImages(queries, outputDir) {
   return images.slice(0, 7);
 }
 
-// TTS via Google Translate (gratis, via axios)
+// TTS via OpenAI (fiable, voz dulce 'nova')
 async function generateAudio(script, outputPath) {
-  // Split script into chunks of < 200 chars
-  const chunks = script.match(/[^.!?]+[.!?]+/g) || [script];
-  const buffers = [];
-  for (const chunk of chunks) {
-    if (!chunk.trim()) continue;
-    const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=es&q=${encodeURIComponent(chunk.trim())}`;
-    try {
-      const res = await axios({ url, method: 'GET', responseType: 'arraybuffer' });
-      buffers.push(Buffer.from(res.data));
-    } catch (e) {
-      console.error('[TTS Chunk Error]', e.message);
-    }
-  }
-  if (buffers.length > 0) {
-    fs.writeFileSync(outputPath, Buffer.concat(buffers));
-    console.log('[TTS] Audio:', outputPath);
-  } else {
-    throw new Error('TTS Failed to generate audio');
-  }
+  const response = await openai.audio.speech.create({
+    model: 'tts-1',
+    voice: 'nova',
+    input: script,
+    speed: 0.92
+  });
+  const buffer = Buffer.from(await response.arrayBuffer());
+  fs.writeFileSync(outputPath, buffer);
+  console.log('[TTS] Audio generado:', outputPath);
 }
 
 // Build MP4 with ffmpeg
