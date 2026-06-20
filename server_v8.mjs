@@ -156,7 +156,7 @@ app.get('/health', async (req, res) => {
   const now = Math.floor(Date.now() / 1000);
   const tokenExpiry = token?.saved_at && token?.expires_in ? token.saved_at + token.expires_in : null;
   const tokenValid = token && (!tokenExpiry || now < tokenExpiry - 60);
-  res.json({ ok: true, version: "gtts-v8-upload-18", aiModel: aiConfig.model, aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1', tiktokConnected: Boolean(token), tokenValid: tokenValid, tokenExpiresAt: tokenExpiry ? new Date(tokenExpiry * 1000).toISOString() : null, time: new Date().toISOString(), logs: appLogs });
+  res.json({ ok: true, version: "gtts-v8-upload-18", aiModel: aiConfig.model, aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1', ttsModel, ttsVoice, tiktokConnected: Boolean(token), tokenValid: tokenValid, tokenExpiresAt: tokenExpiry ? new Date(tokenExpiry * 1000).toISOString() : null, time: new Date().toISOString(), logs: appLogs });
 });
 
 // Disconnect TikTok
@@ -191,12 +191,17 @@ INSTRUCCIONES ESTRICTAS:
     model: aiConfig.model,
     messages: [{ role: 'user', content: prompt }],
     max_tokens: 900,
-    temperature: 0.88
+    temperature: 0.88,
+    response_format: { type: 'json_object' }
   });
   let text = response.choices[0]?.message?.content?.trim() || '{}';
   text = text.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
+  const jsonStart = text.indexOf('{');
+  const jsonEnd = text.lastIndexOf('}');
+  if (jsonStart >= 0 && jsonEnd > jsonStart) text = text.slice(jsonStart, jsonEnd + 1);
   try { return JSON.parse(text); }
-  catch {
+  catch (err) {
+    logError(`[AI Parse Warning] ${err.message}. Raw: ${text.slice(0, 300)}`);
     return {
       title: topic.slice(0, 80),
       script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. Hoy quiero hablarte de ${topic}. Un tema fascinante que merece toda tu atencion. Dejame tu comentario, aprendo de ti.`,
