@@ -39,7 +39,13 @@ app.use(express.json({ limit: '10mb' }));
 const __dirname = dirname(fileURLToPath(import.meta.url));
 app.use(express.static(join(__dirname, 'public')));
 
-const REDIRECT_URI = process.env.TIKTOK_REDIRECT_URI || 'https://toktrend3.onrender.com/api/tiktok/callback';
+const DEFAULT_TIKTOK_REDIRECT_URI = 'https://toktrend3.onrender.com/api/tiktok/oauth/callback';
+function normalizeTikTokRedirectUri(value) {
+  const uri = String(value || '').trim();
+  if (!uri) return DEFAULT_TIKTOK_REDIRECT_URI;
+  return uri.replace(/\/api\/tiktok\/callback\/?$/i, '/api/tiktok/oauth/callback');
+}
+const REDIRECT_URI = normalizeTikTokRedirectUri(process.env.TIKTOK_REDIRECT_URI);
 
 // PKCE
 const codeVerifiers = new Map();
@@ -482,7 +488,7 @@ app.get('/api/tiktok/login', async (req, res) => {
   res.redirect(`https://www.tiktok.com/v2/auth/authorize?client_key=${clientKey}&response_type=code&scope=${encodeURIComponent(scope)}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}&code_challenge=${challenge}&code_challenge_method=S256`);
 });
 
-app.get('/api/tiktok/callback', async (req, res) => {
+async function handleTikTokOAuthCallback(req, res) {
   const { code, error, state } = req.query;
   if (error) return res.send(`<h1>Error: ${error}</h1>`);
   if (!code) return res.status(400).send('No code');
@@ -495,7 +501,10 @@ app.get('/api/tiktok/callback', async (req, res) => {
     await writeToken(data);
     res.send(`<div style="font-family:sans-serif;text-align:center;padding:50px"><h1 style="color:#10b981">✅ TikTok Conectado</h1><script>setTimeout(()=>window.close(),2500)</script></div>`);
   } catch (err) { res.status(500).send(`<h1>Error conectando a TikTok</h1><pre>${err.response ? JSON.stringify(err.response.data, null, 2) : err.message}</pre><p>Revisa TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET y que el Redirect URI en TikTok coincida exactamente con: <b>${REDIRECT_URI}</b></p>`); }
-});
+}
+
+app.get('/api/tiktok/oauth/callback', handleTikTokOAuthCallback);
+app.get('/api/tiktok/callback', handleTikTokOAuthCallback);
 
 app.get('/api/tiktok/status', async (req, res) => {
   const token = await readToken();
