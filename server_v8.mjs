@@ -41,6 +41,54 @@ app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json({ limit: '20mb' }));
 app.use(express.static(join(__dirname, 'public')));
 
+// ---------------- Memory Optimization ----------------
+let isGenerating = false; // Control de concurrencia
+const tempFiles = new Set(); // Registro de archivos temporales
+
+// Limpieza automática de archivos temporales
+function registerTempFile(filepath) {
+  tempFiles.add(filepath);
+}
+
+function cleanupTempFile(filepath) {
+  try {
+    if (fs.existsSync(filepath)) {
+      fs.unlinkSync(filepath);
+      tempFiles.delete(filepath);
+      console.log(`[Cleanup] Eliminado: ${filepath}`);
+    }
+  } catch (err) {
+    console.error(`[Cleanup] Error eliminando ${filepath}:`, err.message);
+  }
+}
+
+function cleanupAllTempFiles() {
+  console.log(`[Cleanup] Limpiando ${tempFiles.size} archivos temporales...`);
+  for (const file of tempFiles) {
+    cleanupTempFile(file);
+  }
+}
+
+// Monitoreo de memoria cada 30 segundos
+setInterval(() => {
+  const used = process.memoryUsage();
+  const usedMB = Math.round(used.heapUsed / 1024 / 1024);
+  const rssMB = Math.round(used.rss / 1024 / 1024);
+  
+  if (usedMB > 350 || rssMB > 450) {
+    console.warn(`⚠️ Memoria alta: Heap ${usedMB}MB, RSS ${rssMB}MB - Limpiando...`);
+    cleanupAllTempFiles();
+    if (global.gc) {
+      global.gc();
+      console.log('[GC] Garbage collection ejecutado');
+    }
+  }
+}, 30000);
+
+// Limpieza al cerrar el proceso
+process.on('SIGTERM', cleanupAllTempFiles);
+process.on('SIGINT', cleanupAllTempFiles);
+
 // ---------------- AI Config ----------------
 function getAIConfig() {
   const apiKey = process.env.AI_API_KEY || process.env.GROQ_API_KEY || process.env.TOGETHER_API_KEY || process.env.OPENAI_API_KEY;
@@ -456,14 +504,17 @@ async function fetchFallbackImage(query, outputPath, idx = 0) {
     }
   } catch {}
 
-  await execAsync(`"${ffmpegPath.path}" -f lavfi -i "color=c=${colors[idx % colors.length]}:s=1080x1920" -frames:v 1 -y "${outputPath}"`);
+  // Resolución reducida para ahorrar memoria (720x1280 en vez de 1080x1920)
+  await execAsync(`"${ffmpegPath.path}" -f lavfi -i "color=c=${colors[idx % colors.length]}:s=720x1280" -frames:v 1 -y "${outputPath}"`);
+  registerTempFile(outputPath);
   return true;
 }
 
 async function generateImages(prompts, outputDir) {
   fs.mkdirSync(outputDir, { recursive: true });
   const imagePaths = [];
-  for (let i = 0; i < 7; i++) {
+  // Reducido de 7 a 5 imágenes para optimizar memoria
+  for (let i = 0; i < 5; i++) {
     const p = prompts[i] || prompts[0] || 'cinematic storytelling';
     const outPath = join(outputDir, `img_${i}.jpg`);
     let ok = false;
@@ -507,10 +558,11 @@ async function buildCinematicVideo(images, audioPath, outputPath, totalSeconds) 
   const perImage = (totalSeconds / images.length).toFixed(2);
   const imageInputs = images.map((p) => `-loop 1 -t ${perImage} -i "${p}"`).join(' ');
 
+  // Resolución reducida para ahorrar memoria (720x1280 en vez de 1080x1920)
   const visualFilters = images.map((_, i) => {
     const zoomStart = 1.0 + (i % 3) * 0.03;
     const zoomEnd = zoomStart + 0.1;
-    return `[${i}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='if(lte(on,1),${zoomStart},min(zoom+0.0012,${zoomEnd}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=75:s=1080x1920,fps=30,format=yuv420p[v${i}]`;
+    return `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='if(lte(on,1),${zoomStart},min(zoom+0.0012,${zoomEnd}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=75:s=720x1280,fps=30,format=yuv420p[v${i}]`;
   }).join(';');
 
   const concatChain = images.map((_, i) => `[v${i}]`).join('');
@@ -558,10 +610,17 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
   const scriptData = await generateScript(topic, learningContext);
   const imgDir = join(workDir, 'imgs');
   const images = await generateImages(scriptData.image_queries || [topic], imgDir);
+  
+  // Registrar imágenes para limpieza
+  images.forEach(img => registerTempFile(img));
+  
   const audioPath = join(workDir, 'narration.mp3');
   await generateNarration(scriptData.script, audioPath);
+  registerTempFile(audioPath);
 
   const videoPath = join(workDir, 'video.mp4');
+  registerTempFile(videoPath);
+  
   const duration = estimateSeconds(scriptData.script);
 
   let usedAbacusVideo = false;
@@ -825,6 +884,27 @@ function setupAutomation() {
 setupAutomation();
 
 // ---------------- Endpoints ----------------
+// Endpoint de diagnóstico de memoria
+app.get('/api/diagnostics', (req, res) => {
+  const used = process.memoryUsage();
+  const formatMB = (bytes) => `${Math.round(bytes / 1024 / 1024)} MB`;
+  
+  res.json({
+    ok: true,
+    memory: {
+      rss: formatMB(used.rss),
+      heapTotal: formatMB(used.heapTotal),
+      heapUsed: formatMB(used.heapUsed),
+      external: formatMB(used.external),
+      arrayBuffers: formatMB(used.arrayBuffers || 0)
+    },
+    tempFiles: tempFiles.size,
+    isGenerating,
+    uptime: `${Math.floor(process.uptime() / 60)} minutos`,
+    nodeVersion: process.version
+  });
+});
+
 app.get('/health', async (req, res) => {
   const token = await readToken();
   const now = Math.floor(Date.now() / 1000);
@@ -867,8 +947,13 @@ app.get('/api/generate', ensureAI, async (req, res) => {
   }
 });
 
-// 1) Generar video manual
+// 1) Generar video manual (con control de concurrencia)
 app.post('/api/videos/manual', ensureAI, async (req, res) => {
+  if (isGenerating) {
+    return res.status(503).json({ ok: false, error: 'Ya hay un video generándose. Por favor espera 1-2 minutos e intenta de nuevo.' });
+  }
+  
+  isGenerating = true;
   try {
     const topic = String(req.body.topic || '').trim();
     if (!topic) return res.status(400).json({ ok: false, error: 'topic es obligatorio' });
@@ -876,11 +961,20 @@ app.post('/api/videos/manual', ensureAI, async (req, res) => {
     res.json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  } finally {
+    isGenerating = false;
+    // Forzar limpieza de memoria después de cada generación
+    if (global.gc) global.gc();
   }
 });
 
-// 2) Generar video de trending
+// 2) Generar video de trending (con control de concurrencia)
 app.post('/api/videos/trending', ensureAI, async (req, res) => {
+  if (isGenerating) {
+    return res.status(503).json({ ok: false, error: 'Ya hay un video generándose. Por favor espera 1-2 minutos e intenta de nuevo.' });
+  }
+  
+  isGenerating = true;
   try {
     const trends = await detectTrendingTopics(10);
     if (!trends.length) return res.status(503).json({ ok: false, error: 'No se pudieron detectar tendencias en este momento.' });
@@ -889,6 +983,10 @@ app.post('/api/videos/trending', ensureAI, async (req, res) => {
     res.json({ ...result, trend: selected, trends });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  } finally {
+    isGenerating = false;
+    // Forzar limpieza de memoria después de cada generación
+    if (global.gc) global.gc();
   }
 });
 
@@ -972,6 +1070,20 @@ app.post('/api/publish', async (req, res) => {
     const { sessionId, title, description } = req.body;
     if (!sessionId) return res.status(400).json({ ok: false, error: 'Missing sessionId' });
     const published = await publishSessionToTikTok({ sessionId, title, description });
+    
+    // Limpiar archivos temporales después de publicar exitosamente
+    setTimeout(() => {
+      const workDir = join(__dirname, 'public', 'videos', sessionId);
+      try {
+        if (fs.existsSync(workDir)) {
+          fs.rmSync(workDir, { recursive: true, force: true });
+          console.log(`[Cleanup] Directorio ${sessionId} eliminado después de publicar`);
+        }
+      } catch (err) {
+        console.error(`[Cleanup] Error eliminando directorio ${sessionId}:`, err.message);
+      }
+    }, 5000); // 5 segundos después de publicar
+    
     res.json({ ok: true, ...published });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
