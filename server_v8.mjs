@@ -803,25 +803,29 @@ async function fetchStockVideoClips(queries, outputDir, count = 5) {
 
 // Compone un video cinematográfico a partir de CLIPS de video reales + narración.
 // Cada clip se recorta a una duración uniforme, se escala/recorta a 720x1280 y se concatena.
-async function buildVideoFromClips(clips, audioPath, outputPath, totalSeconds) {
-  const perClip = Math.max(2.5, totalSeconds / clips.length);
+async function buildVideoFromClips(clips, audioPath, outputPath, audioSeconds) {
+  // Cola de seguridad para que la narración termine completa (sin cortar el diálogo final).
+  const TAIL = 1.4;
+  const videoSeconds = Math.max(2, (Number(audioSeconds) || 0) + TAIL);
+  const perClip = Math.max(2.5, videoSeconds / clips.length);
   const inputs = clips.map((c) => `-stream_loop -1 -t ${perClip.toFixed(2)} -i "${c}"`).join(' ');
 
   const filters = clips.map((_, i) =>
     `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,format=yuv420p[v${i}]`
   ).join(';');
   const concatChain = clips.map((_, i) => `[v${i}]`).join('');
-  const filter = `${filters};${concatChain}concat=n=${clips.length}:v=1:a=0[v]`;
+  // Audio rellenado con silencio (apad) para que nunca termine antes que el video.
+  const filter = `${filters};${concatChain}concat=n=${clips.length}:v=1:a=0[v];[${clips.length}:a]apad[a]`;
 
   const cmd = [
     `"${ffmpegPath.path}" -y`,
     inputs,
     `-i "${audioPath}"`,
     `-filter_complex "${filter}"`,
-    `-map "[v]" -map ${clips.length}:a`,
+    `-map "[v]" -map "[a]"`,
     '-c:v libx264 -preset medium -crf 21 -pix_fmt yuv420p',
     '-c:a aac -b:a 192k -ar 48000 -ac 2',
-    `-shortest -t ${totalSeconds} -movflags +faststart`,
+    `-t ${videoSeconds.toFixed(2)} -movflags +faststart`,
     `"${outputPath}"`
   ].join(' ');
 
@@ -950,43 +954,76 @@ async function makeSilentAudio(outputPath, seconds) {
   return true;
 }
 
+// Limpia y normaliza el texto del guion para que la VOZ suene fluida y natural:
+// quita emojis, hashtags, markdown, URLs y normaliza espacios y puntuación (pausas naturales).
+function cleanNarrationText(text) {
+  let t = String(text || '');
+  t = t.replace(/https?:\/\/\S+/g, ' ');           // URLs
+  t = t.replace(/[#@][\wáéíóúñ]+/gi, ' ');          // hashtags / menciones (se leen mal)
+  t = t.replace(/[*_`>#~|]+/g, ' ');                // markdown básico
+  // emojis y pictogramas
+  t = t.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{1F1E6}-\u{1F1FF}]/gu, ' ');
+  t = t.replace(/[“”«»"]/g, '');                    // comillas tipográficas
+  t = t.replace(/\s*[–—]\s*/g, ', ');               // guiones largos -> pausa
+  t = t.replace(/\s*([,.;:!?¡¿])\s*/g, '$1 ');      // espacio tras puntuación
+  t = t.replace(/([,.;:!?])\1+/g, '$1');            // puntuación repetida
+  t = t.replace(/[ \t]+/g, ' ');                    // espacios múltiples
+  t = t.replace(/\s+/g, ' ').trim();
+  if (t && !/[.!?]$/.test(t)) t += '.';             // cierre con cadencia natural
+  return t;
+}
+
 async function generateNarration(script, outputPath) {
+  const text = cleanNarrationText(script) || String(script || '').trim();
+
   // 1) Abacus Audio (si está configurado)
   if (ABACUS_AUDIO_API_URL && ABACUS_API_KEY) {
-    if (await generateNarrationWithAbacus(script, outputPath)) return 'abacus';
+    if (await generateNarrationWithAbacus(text, outputPath)) return 'abacus';
   }
 
-  // 2) OpenAI / TTS_API_KEY (si está configurado) — voz HD natural
+  // 2) OpenAI / TTS_API_KEY — voz natural. Intenta primero el modelo más expresivo
+  //    (gpt-4o-mini-tts con instrucciones de tono) y cae a tts-1-hd si no está disponible.
   if (ttsClient) {
-    try {
-      const tts = await ttsClient.audio.speech.create({
-        model: process.env.TTS_MODEL || 'tts-1-hd',
-        voice: process.env.TTS_VOICE || 'nova',
-        input: script,
-        response_format: 'mp3',
-        speed: Number(process.env.TTS_SPEED || 0.95)
-      });
-      fs.writeFileSync(outputPath, Buffer.from(await tts.arrayBuffer()));
-      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) return 'openai';
-    } catch (err) {
-      pushLog(`[OpenAI TTS] fallo, usando fallback gratuito: ${err.message}`);
+    const voice = process.env.TTS_VOICE || 'nova';
+    const speed = Number(process.env.TTS_SPEED || 1.0);
+    const instructions = process.env.TTS_INSTRUCTIONS
+      || 'Narra en español latino neutro con una voz cálida, cercana y muy natural, como un buen narrador de documental. Ritmo fluido y conversacional, entonación expresiva que sube y baja con la historia, y pausas naturales en las comas y los puntos. Pronuncia con claridad, sin sonar robótico ni apresurado.';
+    const models = process.env.TTS_MODEL ? [process.env.TTS_MODEL] : ['gpt-4o-mini-tts', 'tts-1-hd'];
+    for (const model of models) {
+      try {
+        const params = { model, voice, input: text, response_format: 'mp3' };
+        // 'instructions' solo lo soporta gpt-4o-mini-tts; 'speed' solo los tts-1*.
+        if (model.includes('gpt-4o')) params.instructions = instructions;
+        else params.speed = speed;
+        const tts = await ttsClient.audio.speech.create(params);
+        fs.writeFileSync(outputPath, Buffer.from(await tts.arrayBuffer()));
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
+          pushLog(`[TTS] Voz natural generada con OpenAI (${model}, voz "${voice}").`);
+          return 'openai';
+        }
+      } catch (err) {
+        pushLog(`[OpenAI TTS] modelo ${model} falló: ${err.message}`);
+      }
     }
   }
 
   // 3) Google Translate TTS (gratis, sin key) — fallback robusto en español
-  if (await synthesizeGoogleTTS(script, outputPath, 'es')) return 'google';
+  if (await synthesizeGoogleTTS(text, outputPath, 'es')) return 'google';
 
   // 4) Último recurso: pista silenciosa para que el video siempre se genere
   pushLog('[Narración] Todas las fuentes TTS fallaron, usando pista silenciosa.');
-  await makeSilentAudio(outputPath, estimateSeconds(script));
+  await makeSilentAudio(outputPath, estimateSeconds(text));
   return 'silent';
 }
 
 // Duración real del audio (segundos) usando ffprobe/ffmpeg.
 async function getAudioDuration(audioPath) {
   try {
-    const { stderr } = await execAsync(`"${ffmpegPath.path}" -i "${audioPath}" -f null - 2>&1 || true`);
-    const m = String(stderr || '').match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
+    // El comando usa 2>&1, así que la salida de ffmpeg llega por stdout (y a veces stderr).
+    // Combinamos ambas para extraer la "Duration" de forma fiable (antes leía solo stderr → null).
+    const { stdout, stderr } = await execAsync(`"${ffmpegPath.path}" -i "${audioPath}" -f null - 2>&1 || true`);
+    const out = `${stdout || ''}\n${stderr || ''}`;
+    const m = out.match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
     if (m) return (+m[1]) * 3600 + (+m[2]) * 60 + parseFloat(m[3]);
   } catch {}
   return null;
@@ -997,10 +1034,14 @@ function estimateSeconds(script) {
   return Math.max(30, Math.min(55, Math.ceil(words / 2.4)));
 }
 
-async function buildCinematicVideo(images, audioPath, outputPath, totalSeconds) {
+async function buildCinematicVideo(images, audioPath, outputPath, audioSeconds) {
   const fps = 30;
-  // Frames por imagen. zoompan controla la duración (NO usar -loop, que multiplica los frames).
-  const perFrames = Math.max(fps, Math.round((totalSeconds / images.length) * fps));
+  // Cola de seguridad: el video dura un poco MÁS que el audio para que la última
+  // frase de la narración termine completa y nunca se corte el diálogo final.
+  const TAIL = 1.4;
+  const videoSeconds = Math.max(2, (Number(audioSeconds) || 0) + TAIL);
+  // Frames por imagen. Usamos ceil para que la duración VISUAL sea >= audio + cola.
+  const perFrames = Math.max(fps, Math.ceil((videoSeconds / images.length) * fps));
   const imageInputs = images.map((p) => `-i "${p}"`).join(' ');
 
   // Movimiento Ken Burns: cada imagen es UNA entrada y zoompan genera 'perFrames' frames.
@@ -1013,17 +1054,19 @@ async function buildCinematicVideo(images, audioPath, outputPath, totalSeconds) 
   }).join(';');
 
   const concatChain = images.map((_, i) => `[v${i}]`).join('');
-  const filter = `${visualFilters};${concatChain}concat=n=${images.length}:v=1:a=0[v]`;
+  // Se rellena el AUDIO con silencio (apad) para que jamás termine antes que el video.
+  // El corte final lo marca -t videoSeconds (audio completo + cola), no -shortest.
+  const filter = `${visualFilters};${concatChain}concat=n=${images.length}:v=1:a=0[v];[${images.length}:a]apad[a]`;
 
   const cmd = [
     `"${ffmpegPath.path}" -y`,
     imageInputs,
     `-i "${audioPath}"`,
     `-filter_complex "${filter}"`,
-    `-map "[v]" -map ${images.length}:a`,
+    `-map "[v]" -map "[a]"`,
     '-c:v libx264 -preset medium -crf 21 -pix_fmt yuv420p',
     '-c:a aac -b:a 192k -ar 48000 -ac 2',
-    `-shortest -t ${totalSeconds} -movflags +faststart`,
+    `-t ${videoSeconds.toFixed(2)} -movflags +faststart`,
     `"${outputPath}"`
   ].join(' ');
 
@@ -1074,7 +1117,11 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
   registerTempFile(audioPath);
 
   const audioDuration = await getAudioDuration(audioPath);
-  const duration = Math.max(15, Math.min(60, Math.round(audioDuration || estimateSeconds(scriptData.script))));
+  // Duración REAL del audio (fraccional). Tope generoso (95s) para no recortar narraciones
+  // largas; el video se construye con una cola extra para que el diálogo nunca se corte.
+  const audioSec = Math.max(8, Math.min(95, audioDuration || estimateSeconds(scriptData.script)));
+  const duration = audioSec;                 // se pasa a los constructores de video (fraccional)
+  const displayDuration = Math.round(audioSec); // valor entero para UI/registro
 
   const videoPath = join(workDir, 'video.mp4');
   registerTempFile(videoPath);
@@ -1110,7 +1157,7 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
           slides.push({
             url: `/videos/${sessionId}/imgs/img_${i}.jpg`,
             description: scriptData.shots?.[i] || `Escena ${i + 1}`,
-            duration: Number((duration / clips.length).toFixed(1))
+            duration: Number((displayDuration / clips.length).toFixed(1))
           });
         }
       }
@@ -1127,7 +1174,7 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     slides = images.map((_, i) => ({
       url: `/videos/${sessionId}/imgs/img_${i}.jpg`,
       description: scriptData.shots?.[i] || `Escena ${i + 1}`,
-      duration: Number((duration / images.length).toFixed(1))
+      duration: Number((displayDuration / images.length).toFixed(1))
     }));
   }
 
@@ -1137,7 +1184,7 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     source,
     title: scriptData.title,
     createdAt: Date.now(),
-    duration,
+    duration: displayDuration,
     visualMode,
     narrationSource,
     usedAbacusVideo: visualMode === 'abacus_video',
@@ -1146,7 +1193,7 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     hasAbacusAudio: Boolean(ABACUS_AUDIO_API_URL && ABACUS_API_KEY)
   };
   await saveGeneratedRecord(record);
-  pushLog(`[Pipeline] Video listo (${visualMode}, voz: ${narrationSource}, ${duration}s) sobre "${topic}"`);
+  pushLog(`[Pipeline] Video listo (${visualMode}, voz: ${narrationSource}, ${displayDuration}s) sobre "${topic}"`);
 
   setTimeout(() => {
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
@@ -1156,7 +1203,7 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     ok: true,
     sessionId,
     topic,
-    duration,
+    duration: displayDuration,
     visualMode,
     narrationSource,
     videoUrl: `/videos/${sessionId}/video.mp4`,
@@ -1415,8 +1462,8 @@ app.get('/health', async (req, res) => {
 
   res.json({
     ok: true,
-    version: 'toktrend3-pro-v11-ai-images',
-    buildMarker: 'ai-image-seq-backoff',
+    version: 'toktrend3-pro-v12-voice-fullvideo',
+    buildMarker: 'natural-voice-no-cut',
     aiModel: aiConfig.model,
     aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1',
     abacus: {
@@ -1436,6 +1483,8 @@ app.get('/health', async (req, res) => {
       pixabay: Boolean(PIXABAY_API_KEY),
       freeImageSources: ['pollinations(ai)', 'openverse', 'wikimedia'], // siempre disponibles (sin key)
       ttsOpenAI: Boolean(ttsClient),
+      ttsModel: ttsClient ? (process.env.TTS_MODEL || 'gpt-4o-mini-tts→tts-1-hd') : null,
+      ttsVoice: ttsClient ? (process.env.TTS_VOICE || 'nova') : null,
       ttsFreeFallback: 'google-translate-tts' // siempre disponible (sin key)
     },
     automation: automationState,
