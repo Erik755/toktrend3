@@ -1167,6 +1167,14 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     const resp = await axios.get(videoUrlToDownload, { responseType: 'arraybuffer', timeout: 300000 });
     fs.writeFileSync(videoPath, Buffer.from(resp.data));
     
+    let viralData = { title: topic, description: `Video sobre ${topic}`, hashtags: ['#viral', '#parati'] };
+    try {
+      pushLog(`[Pipeline] Generando metadatos virales (Creator Academy) en la nube...`);
+      viralData = await generateScript(topic);
+    } catch (e) {
+      pushLog(`[Pipeline] Advertencia: Falló metadata viral, usando defaults.`);
+    }
+    
     return {
       ok: true,
       sessionId,
@@ -1175,7 +1183,12 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
       visualMode: 'agente_python',
       narrationSource: 'agente_python',
       videoUrl: `/videos/${sessionId}/video.mp4`,
-      scriptData: { script: statusMsg },
+      scriptData: { 
+        script: statusMsg,
+        title: viralData.title || topic,
+        description: viralData.description || `Video sobre ${topic}`,
+        hashtags: viralData.hashtags || ['#viral', '#parati']
+      },
       slides: []
     };
   } catch (err) {
