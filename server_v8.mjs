@@ -170,7 +170,7 @@ app.post('/api/tiktok/disconnect', async (req, res) => {
 function fallbackScriptData(topic) {
   return {
     title: topic.slice(0, 80),
-    script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. Hoy quiero hablarte de ${topic}, porque detras de cada detalle hay una historia que puede despertar curiosidad, emocion y conversacion. Imagina la escena: imagenes potentes, ritmo dinamico y una idea clara que atrapa desde el primer segundo. Lo importante no es solo mostrar algo bonito, sino convertirlo en una experiencia breve, intensa y facil de recordar. Cada palabra debe empujar al espectador a quedarse, sentir algo y participar. Por eso este video mezcla datos, energia y una invitacion directa a opinar. Si este tema te mueve, si tienes una experiencia o una pregunta, no te quedes mirando en silencio. Dejame tu comentario, aprendo de ti.`,
+    script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. Aqui viene lo interesante: ${topic} no es solo una idea para mirar de pasada, es una historia que puede atrapar si la contamos con tension. Primero vemos el detalle que todos reconocen, pero enseguida aparece la pregunta que hace que no puedas soltarlo: por que esto importa, por que nos llama tanto la atencion, y que dice de nosotros. Imagina imagenes potentes, ritmo rapido, cortes visuales precisos y una narracion que no camina, acelera. Lo que casi nadie nota es que un buen video no solo informa; abre una curiosidad, la estira, y luego entrega una recompensa. Por eso cada escena debe sentirse como una pista: una imagen que sorprende, un dato que cambia el contexto, una frase que provoca respuesta. Y esta es la parte clave: si el espectador se reconoce en la historia, comenta. Si le despiertas una duda, se queda. Si le das una postura, responde. Dejame tu comentario, aprendo de ti.`,
     description: `${topic} - IA autonoma que aprende de tus comentarios. #TokTrend`,
     hashtags: ['#TokTrend','#IA','#Viral','#Aprende','#Cultura'],
     shots: [`Plano cinematografico sobre ${topic}`,'Detalle visual del tema','Escena dinamica con movimiento','Primer plano emocional','Ambiente moderno y profesional','Momento aspiracional','Cierre visual impactante'],
@@ -187,7 +187,7 @@ function normalizeScriptData(data, topic) {
   const normalized = { ...fallback, ...(data && typeof data === 'object' ? data : {}) };
   normalized.title = String(normalized.title || fallback.title).slice(0, 80);
   normalized.script = String(normalized.script || fallback.script);
-  if (normalized.script.split(/\s+/).filter(Boolean).length < 95) normalized.script = fallback.script;
+  if (normalized.script.split(/\s+/).filter(Boolean).length < 140) normalized.script = fallback.script;
   normalized.description = String(normalized.description || fallback.description).slice(0, 300);
   normalized.hashtags = Array.isArray(normalized.hashtags) && normalized.hashtags.length ? normalized.hashtags : fallback.hashtags;
   normalized.shots = Array.isArray(normalized.shots) && normalized.shots.length >= 7 ? normalized.shots.slice(0, 7) : fallback.shots;
@@ -195,23 +195,39 @@ function normalizeScriptData(data, topic) {
   return normalized;
 }
 
+function estimateVideoSeconds(script) {
+  const words = String(script || '').split(/\s+/).filter(Boolean).length;
+  return Math.max(29, Math.min(90, Math.ceil((words / 2.45) + 3)));
+}
+
 async function generateScript(topic) {
-const prompt = `Eres un orador de primer nivel mundial, locutor apasionado y comunicador viral de TikTok.
-Crea un guion completo en espanol para un video de TikTok de 29 segundos sobre el tema: "${topic}".
+const prompt = `Eres un estratega de contenido viral, guionista de TikTok y narrador cinematografico de alto impacto.
+Crea un guion completo en espanol para un video vertical sobre el tema: "${topic}".
+
+OBJETIVO:
+El video debe sonar como contenido de un creador grande: rapido, curioso, emocional, con tension y cero monotonia. No imites ni copies frases, voz o estilo exacto de ninguna persona famosa. Usa tecnicas generales de creadores exitosos: gancho inmediato, curiosidad abierta, contraste, mini historia, reenganche, payoff y pregunta final.
 
 INSTRUCCIONES ESTRICTAS:
 - Empieza SIEMPRE con: "Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios."
-- Desarrolla el tema con elocuencia, datos fascinantes y ganchos emocionales durante los 29 segundos completos.
-- El dialogo debe ser continuo, fluido y ocupar toda la duracion. Aproximadamente 120-140 palabras.
-- El campo "script" NUNCA puede ser un resumen corto. Debe tener minimo 110 palabras.
-- Tono: apasionado, cercano, culto y magnetico. Nunca aburrido. Habla directamente al espectador.
+- Justo despues de esa frase, lanza un gancho fuerte: sorpresa, pregunta, dato extremo o contradiccion.
+- Estructura invisible del guion: Hook -> contexto rapido -> tension -> giro/reenganche -> payoff -> comentario.
+- Cada 1 o 2 frases debe haber una razon para seguir escuchando: "pero aqui viene lo increible", "lo que casi nadie nota", "y esta es la parte que cambia todo".
+- Alterna frases cortas con frases mas intensas para que la narracion respire y no suene plana.
+- Usa imagenes mentales concretas, verbos de accion y palabras sensoriales. Evita relleno generico.
+- El dialogo debe ser continuo y fluido. Hazlo tan largo como sea necesario para enganchar bien: normalmente 160-240 palabras; si el tema lo merece, hasta 320 palabras.
+- El campo "script" NUNCA puede ser un resumen corto. Debe tener minimo 150 palabras.
+- Tono: apasionado, cercano, culto, curioso y magnetico. Nunca aburrido. Habla directamente al espectador.
+- No digas "bienvenidos", "en este video", "hoy vamos a hablar" ni frases de intro lenta.
 - Termina con: "Dejame tu comentario, aprendo de ti."
+- El title debe sonar como titulo viral, con curiosidad, maximo 80 caracteres.
+- Las shots deben ser visuales y especificas, no genericas: cada escena debe poder buscarse como imagen/video real.
+- image_queries deben estar en ingles y ser concretas para Wikimedia/imagenes.
 
     Devuelve SOLO este JSON valido, sin markdown, sin explicaciones y sin texto fuera del objeto.
     Las claves deben llamarse EXACTAMENTE: title, script, description, hashtags, shots, image_queries.
     {
       "title": "Titulo del video (max 80 chars)",
-      "script": "El guion completo narrado en primera persona (120-140 palabras)",
+      "script": "El guion completo narrado en primera persona (160-320 palabras)",
       "description": "Descripcion TikTok con contexto y call-to-action (max 300 chars)",
       "hashtags": ["#tag1","#tag2","#tag3","#tag4","#tag5","#tag6","#tag7","#tag8"],
       "shots": ["Descripcion visual escena 1","Escena 2","Escena 3","Escena 4","Escena 5","Escena 6","Escena 7"],
@@ -449,7 +465,8 @@ app.get('/api/generate', requireAI, async (req, res) => {
     const audioPath = join(workDir, 'narration.mp3');
     await generateAudio(scriptData.script, audioPath);
     const videoPath = join(workDir, 'video.mp4');
-    await buildVideo(images, audioPath, videoPath, 29);
+    const totalSeconds = estimateVideoSeconds(scriptData.script);
+    await buildVideo(images, audioPath, videoPath, totalSeconds);
     await saveUsedTopic(sessionId);
 
     if (db) { try { await db.collection('generated_videos').doc(sessionId).set({ topic, title: scriptData.title, createdAt: Date.now() }); } catch {} }
@@ -461,8 +478,9 @@ app.get('/api/generate', requireAI, async (req, res) => {
       sessionId,
       videoUrl: `/videos/${sessionId}/video.mp4`,
       ttsProvider: lastTtsProvider,
+      duration: totalSeconds,
       scriptData,
-      slides: images.map((_, i) => ({ url: `/videos/${sessionId}/imgs/img_${i}.jpg`, description: scriptData.shots?.[i] || `Escena ${i+1}`, duration: 4 }))
+      slides: images.map((_, i) => ({ url: `/videos/${sessionId}/imgs/img_${i}.jpg`, description: scriptData.shots?.[i] || `Escena ${i+1}`, duration: Number((totalSeconds / images.length).toFixed(1)) }))
     });
   } catch (err) {
     logError('[Generate Error] ' + err.message);
