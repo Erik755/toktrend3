@@ -27,7 +27,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:12px;pa
 .tt-d:hover{background:rgba(251,113,133,.18)}
 .hidden{display:none!important}
 
-main{position:relative;z-index:1;padding:24px clamp(12px,3vw,32px);display:grid;grid-template-columns:repeat(4, minmax(0, 1fr));gap:20px;align-items:start;max-width:1300px;margin:0 auto}
+main{position:relative;z-index:1;padding:24px clamp(12px,3vw,32px);display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:20px;align-items:start;max-width:1100px;margin:0 auto}
 .card{background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.03));border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:16px;box-shadow:0 12px 44px rgba(0,0,0,.28)}
 .card h2{font-size:15px;margin-bottom:7px}
 .card h3{font-size:13px;margin-bottom:7px}
@@ -179,18 +179,10 @@ textarea:focus{border-color:var(--cyan)}
     </div>
   </section>
 
-  <!-- COL 3: Guion Generado -->
-  <section>
-    <div class="card is-placeholder" id="scriptCard" style="height:100%">
-      <h3>Guión generado</h3>
-      <div class="sp-title" id="sTitle">Aún no hay video</div>
-      <div class="sp-box" id="sScript" style="max-height:220px">Escribe un tema a la izquierda y presiona Generar Video para ver el guión aquí.</div>
-      <div class="label" style="margin-top:10px">ESCENAS</div>
-      <div id="sShots">Las escenas aparecerán aquí...</div>
-      <div class="tags" id="sTags"></div>
-      <div class="sp-box" id="sDesc" style="margin-top:7px;color:var(--muted);font-size:9px;max-height:80px;display:none"></div>
-    </div>
-  </section>
+  <!-- Oculto para que JS no de error -->
+  <div style="display:none;" id="scriptCard">
+    <div id="sTitle"></div><div id="sScript"></div><div id="sShots"></div><div id="sTags"></div><div id="sDesc"></div>
+  </div>
 
   <!-- COL 4: Tendencias -->
   <section>
