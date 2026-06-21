@@ -1341,8 +1341,10 @@ let automationState = readJSONSafe(AUTOMATION_FILE, {
   autoPublish: true,
   lastRunAt: null,
   nextRunAt: null,
-  running: false
+  running: false,
+  usedTrends: []
 });
+if (!automationState.usedTrends) automationState.usedTrends = [];
 let automationTimer = null;
 
 function persistAutomationState() {
@@ -1359,10 +1361,17 @@ async function runAutomationCycle() {
     let source = 'manual';
 
     if (automationState.mode === 'trending') {
-      const trends = await detectTrendingTopics(10);
-      if (trends.length) {
-        topic = trends[0].topic;
-        source = trends[0].source;
+      const trends = await detectTrendingTopics(30);
+      const newTrends = trends.filter(t => !automationState.usedTrends.includes(t.topic));
+      if (newTrends.length) {
+        topic = newTrends[0].topic;
+        source = newTrends[0].source;
+        automationState.usedTrends.push(topic);
+        if (automationState.usedTrends.length > 200) automationState.usedTrends.shift(); // Guardar ultimas 200
+        persistAutomationState();
+      } else {
+        pushLog(`[Automation] No hay tendencias nuevas disponibles, se intentará luego.`);
+        return;
       }
     }
 
@@ -1504,9 +1513,15 @@ app.post('/api/videos/trending', ensureAI, async (req, res) => {
   
   isGenerating = true;
   try {
-    const trends = await detectTrendingTopics(10);
-    if (!trends.length) return res.status(503).json({ ok: false, error: 'No se pudieron detectar tendencias en este momento.' });
-    const selected = trends[0];
+    const trends = await detectTrendingTopics(30);
+    const newTrends = trends.filter(t => !automationState.usedTrends.includes(t.topic));
+    if (!newTrends.length) return res.status(503).json({ ok: false, error: 'No se pudieron detectar tendencias nuevas en este momento.' });
+    const selected = newTrends[0];
+    
+    automationState.usedTrends.push(selected.topic);
+    if (automationState.usedTrends.length > 200) automationState.usedTrends.shift();
+    persistAutomationState();
+    
     const result = await generateVideoPipeline({ topic: selected.topic, source: selected.source || 'trending' });
     res.json({ ...result, trend: selected, trends });
   } catch (err) {
