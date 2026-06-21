@@ -431,22 +431,25 @@ async function generateAudio(script, outputPath) {
 // Build MP4 with ffmpeg
 async function buildVideo(images, audioPath, outputPath, totalSeconds = 29) {
   const perImage = (totalSeconds / images.length).toFixed(3);
-  const concatFile = outputPath + '.txt';
-  const lines = images.map(p => `file '${p}'\nduration ${perImage}`).join('\n') + `\nfile '${images[images.length-1]}'`;
-  fs.writeFileSync(concatFile, lines);
+  const imageInputs = images.map(p => `-loop 1 -t ${perImage} -i "${p}"`).join(' ');
+  const scaledStreams = images.map((_, i) =>
+    `[${i}:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p[v${i}]`
+  ).join(';');
+  const concatStreams = images.map((_, i) => `[v${i}]`).join('');
+  const filter = `${scaledStreams};${concatStreams}concat=n=${images.length}:v=1:a=0,format=yuv420p[v]`;
 
   const cmd = [
     `"${ffmpegPath.path}" -y`,
-    `-f concat -safe 0 -i "${concatFile}"`,
+    imageInputs,
     `-i "${audioPath}"`,
-    `-vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p"`,
+    `-filter_complex "${filter}"`,
+    `-map "[v]" -map ${images.length}:a`,
     `-c:v libx264 -preset faster -profile:v high -level 4.1 -crf 23 -maxrate 3500k -bufsize 7000k -g 30 -bf 0 -threads 2 -pix_fmt yuv420p`,
     `-c:a aac -b:a 128k -ar 44100 -ac 2`,
     `-shortest -movflags +faststart -t ${totalSeconds}`,
     `"${outputPath}"`
   ].join(' ');
   await execAsync(cmd, { maxBuffer: 100 * 1024 * 1024 });
-  try { fs.unlinkSync(concatFile); } catch {}
   console.log('[ffmpeg] Video OK:', outputPath);
 }
 
