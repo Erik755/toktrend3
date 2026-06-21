@@ -209,6 +209,7 @@ textarea:focus{border-color:var(--cyan)}
 const B = window.location.origin;
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
+const lastVideoKey = 'toktrend3-last-video-v1';
 
 let session = null, slides = [], script = null, slideInt = null, slideIdx = 0;
 let playing = false, lastPubId = null, vidCount = 0;
@@ -334,6 +335,56 @@ function showScript(sd) {
   $('#vmeta').textContent = (sd.hashtags||[]).slice(0,4).join(' ');
 }
 
+function storeLastVideo(data) {
+  try {
+    localStorage.setItem(lastVideoKey, JSON.stringify({
+      sessionId: data.sessionId,
+      topic: data.topic || '',
+      duration: data.duration || null,
+      videoUrl: data.videoUrl || (data.sessionId ? `/videos/${data.sessionId}/video.mp4` : ''),
+      slides: data.slides || [],
+      scriptData: data.scriptData || null,
+      savedAt: new Date().toISOString()
+    }));
+  } catch {}
+}
+
+function applyGeneratedVideo(data, opts={}) {
+  if (!data?.sessionId || !data?.scriptData) return false;
+  session = data.sessionId;
+  slides = data.slides || [];
+  script = data.scriptData;
+  showScript(script);
+  startSlides();
+  if (opts.count !== false) {
+    vidCount++;
+    $('#btnCount').textContent=`ðŸŽ¬ ${vidCount} vÃ­deo${vidCount!==1?'s':''}`;
+  }
+  setAgent(opts.message || 'Video listo âœ“', 100);
+  storeLastVideo(data);
+  return true;
+}
+
+async function restoreLastVideo() {
+  try {
+    const r = await fetch(`${B}/api/videos/latest`);
+    if (r.ok) {
+      const d = await r.json();
+      if (d.ok && applyGeneratedVideo(d.video, { count:false, message:'Ultimo video recuperado âœ“' })) return;
+    }
+  } catch {}
+  try {
+    const cached = JSON.parse(localStorage.getItem(lastVideoKey) || 'null');
+    if (cached) applyGeneratedVideo(cached, { count:false, message:'Ultimo video recuperado âœ“' });
+  } catch {}
+}
+
+async function ensurePublishSession() {
+  if (session) return true;
+  await restoreLastVideo();
+  return Boolean(session);
+}
+
 async function runGenerate(topic, autoPub=false) {
   $('#gen').disabled=true; $('#gen').innerHTML='<span class="spin"></span>Generando…';
   setAgent('Generando contenido cinematográfico…', 15);
@@ -374,7 +425,8 @@ $('#gen').onclick = () => {
 };
 
 async function doPub(sd) {
-  if (!session) { alert('Primero genera un video.'); return; }
+  if (!session && !(await ensurePublishSession())) { alert('Primero genera un video.'); return; }
+  sd = sd || script || {};
   $('#btnPub').disabled=true; $('#btnPub').textContent='⏳ Publicando…';
   setAgent('Publicando en TikTok…', 70);
   try {
@@ -425,6 +477,7 @@ $('#btnReply').onclick=async()=>{
 };
 
 checkHealth();
+restoreLastVideo();
 speechSynthesis.onvoiceschanged=()=>speechSynthesis.getVoices();
 setInterval(loadAutomationStatus, 20000);
 </script>

@@ -63,6 +63,10 @@ function cleanupTempFile(filepath) {
 }
 
 function cleanupAllTempFiles() {
+  if (isGenerating) {
+    console.log('[Cleanup] Generacion activa; se pospone limpieza de temporales');
+    return;
+  }
   console.log(`[Cleanup] Limpiando ${tempFiles.size} archivos temporales...`);
   for (const file of tempFiles) {
     cleanupTempFile(file);
@@ -1096,6 +1100,26 @@ async function saveGeneratedRecord(record) {
   writeJSONSafe(localPath, arr.slice(0, 300));
 }
 
+async function getGeneratedRecords(limit = 50) {
+  if (db) {
+    try {
+      const snap = await db.collection('generated_videos').orderBy('createdAt', 'desc').limit(limit).get();
+      return snap.docs.map((d) => d.data());
+    } catch {}
+  }
+  return readJSONSafe(join(STORAGE_DIR, 'generated_videos.json'), []).slice(0, limit);
+}
+
+function hasGeneratedVideoFile(record) {
+  if (!record?.sessionId) return false;
+  return fs.existsSync(join(__dirname, 'public', 'videos', record.sessionId, 'video.mp4'));
+}
+
+async function getLatestGeneratedVideo() {
+  const records = await getGeneratedRecords(50);
+  return records.find(hasGeneratedVideoFile) || null;
+}
+
 async function getLearningContext() {
   const analytics = readJSONSafe(ANALYTICS_FILE, { insights: [] });
   return (analytics.insights || []).slice(0, 8).join(' | ');
@@ -1124,7 +1148,6 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
   const displayDuration = Math.round(audioSec); // valor entero para UI/registro
 
   const videoPath = join(workDir, 'video.mp4');
-  registerTempFile(videoPath);
 
   // 2) Estrategia visual:
   //    a) Abacus video (si está configurado)
@@ -1153,7 +1176,6 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
       for (let i = 0; i < clips.length; i++) {
         const thumb = join(imgDir, `img_${i}.jpg`);
         if (await extractThumbnail(clips[i], thumb)) {
-          registerTempFile(thumb);
           slides.push({
             url: `/videos/${sessionId}/imgs/img_${i}.jpg`,
             description: scriptData.shots?.[i] || `Escena ${i + 1}`,
@@ -1168,7 +1190,6 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
   //    (generateImages usa Pollinations/Flux como fuente principal y stock real como respaldo)
   if (!built) {
     const images = await generateImages(queries, imgDir);
-    images.forEach((img) => registerTempFile(img));
     await buildCinematicVideo(images, audioPath, videoPath, duration);
     visualMode = AI_IMAGES_ENABLED ? 'ai_images_kenburns' : 'images_kenburns';
     slides = images.map((_, i) => ({
@@ -1190,7 +1211,10 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     usedAbacusVideo: visualMode === 'abacus_video',
     hasStockKeys: Boolean(PEXELS_API_KEY || PIXABAY_API_KEY),
     hasAbacusImage: Boolean(ABACUS_IMAGE_API_URL && ABACUS_API_KEY),
-    hasAbacusAudio: Boolean(ABACUS_AUDIO_API_URL && ABACUS_API_KEY)
+    hasAbacusAudio: Boolean(ABACUS_AUDIO_API_URL && ABACUS_API_KEY),
+    videoUrl: `/videos/${sessionId}/video.mp4`,
+    scriptData,
+    slides
   };
   await saveGeneratedRecord(record);
   pushLog(`[Pipeline] Video listo (${visualMode}, voz: ${narrationSource}, ${displayDuration}s) sobre "${topic}"`);
@@ -1577,15 +1601,14 @@ app.get('/api/automation/status', async (req, res) => {
 
 // 4) Historial y análisis comentarios
 app.get('/api/history', async (req, res) => {
-  try {
-    if (db) {
-      const snap = await db.collection('generated_videos').orderBy('createdAt', 'desc').limit(50).get();
-      const items = snap.docs.map((d) => d.data());
-      return res.json({ ok: true, items });
-    }
-  } catch {}
-  const items = readJSONSafe(join(STORAGE_DIR, 'generated_videos.json'), []);
-  res.json({ ok: true, items: items.slice(0, 50) });
+  const items = await getGeneratedRecords(50);
+  res.json({ ok: true, items });
+});
+
+app.get('/api/videos/latest', async (req, res) => {
+  const latest = await getLatestGeneratedVideo();
+  if (!latest) return res.status(404).json({ ok: false, error: 'No hay video reciente disponible.' });
+  res.json({ ok: true, video: latest });
 });
 
 app.post('/api/analytics/comments/analyze', ensureAI, async (req, res) => {
