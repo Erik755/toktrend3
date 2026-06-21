@@ -390,7 +390,8 @@ async function runGenerate(topic, autoPub=false) {
     vidCount++;
     $('#btnCount').textContent=`🎬 ${vidCount} vídeo${vidCount!==1?'s':''}`;
     setAgent('Video listo ✓', 100);
-    if (d.published) setTimeout(() => alert(`✅ ¡Video Generado y Subido Automáticamente a TikTok!\n\n${d.publishMessage}`), 500);
+    const tip = `💡 TIP ACADEMIA TIKTOK:\nPara "Encontrar tu Vibra y Comunidad", abre TikTok AHORA MISMO en tu celular. Deja tú el PRIMER comentario fijado haciendo una pregunta a tu audiencia, y responde a todo el que comente en los próximos 30 minutos.`;
+    if (d.published) setTimeout(() => alert(`✅ ¡Video Generado y Subido a TikTok!\n\n${d.publishMessage}\n\n${tip}`), 500);
     else if (d.publishError) setTimeout(() => alert(`⚠️ Video generado pero falló al subir:\n\n${d.publishError}`), 500);
     else if (autoPub) await doPub(d.scriptData);
   } finally {
@@ -408,7 +409,8 @@ async function runTrendingGenerate(){
     showScript(d.scriptData); startSlides();
     $('#topic').value=d.topic||'';
     setAgent(`Video trend generado: ${d.topic}`);
-    if (d.published) setTimeout(() => alert(`✅ ¡Video de Tendencia Subido Automáticamente a TikTok!\n\n${d.publishMessage}`), 500);
+    const tip = `💡 TIP ACADEMIA TIKTOK:\nPara "Encontrar tu Vibra y Comunidad", abre TikTok AHORA MISMO en tu celular. Deja tú el PRIMER comentario fijado haciendo una pregunta a tu audiencia, y responde a todo el que comente en los próximos 30 minutos.`;
+    if (d.published) setTimeout(() => alert(`✅ ¡Video de Tendencia Subido a TikTok!\n\n${d.publishMessage}\n\n${tip}`), 500);
     else if (d.publishError) setTimeout(() => alert(`⚠️ Video de tendencia generado pero falló al subir:\n\n${d.publishError}`), 500);
   }catch(e){ alert(e.message); setAgent('Error trend: '+e.message); }
   finally{ $('#gen').disabled=false; $('#gen').textContent='🎬 Generar Video'; }

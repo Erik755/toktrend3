@@ -1694,7 +1694,7 @@ app.post('/api/tiktok/reply-comments', ensureAI, async (req, res) => {
     for (const comment of comments.slice(0, 8)) {
       const aiRes = await openai.chat.completions.create({
         model: aiConfig.model,
-        messages: [{ role: 'user', content: `Responde en español en máximo 150 caracteres de forma natural y cálida a este comentario: "${comment.text}"` }],
+        messages: [{ role: 'user', content: `Actúa como un creador de TikTok experto en construir comunidad. Responde en español (máximo 150 caracteres) a este comentario de un fan: "${comment.text}". REGLA DE TIKTOK CREATOR ACADEMY: Sé auténtico, cálido, y SIEMPRE termina tu respuesta haciéndole una pregunta corta de vuelta (ej: "¿Tú qué opinas?", "¿De qué quieres el próximo?") para obligarlo a responder de nuevo y engañar al algoritmo con más interacción.` }],
         max_tokens: 80,
         temperature: 0.9
       });
