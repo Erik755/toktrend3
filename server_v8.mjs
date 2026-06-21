@@ -913,7 +913,8 @@ app.get('/health', async (req, res) => {
 
   res.json({
     ok: true,
-    version: 'toktrend3-pro-v9',
+    version: 'toktrend3-pro-v9.1-mem',
+    buildMarker: 'mem-opt-f32e242',
     aiModel: aiConfig.model,
     aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1',
     abacus: {

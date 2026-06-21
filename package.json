@@ -4,8 +4,8 @@
   "type": "module",
   "private": true,
  "scripts": {
-  "start": "node server_v8.mjs",
-  "dev": "node --watch server_v8.mjs"
+  "start": "node --expose-gc --max-old-space-size=400 server_v8.mjs",
+  "dev": "node --watch --expose-gc --max-old-space-size=400 server_v8.mjs"
 },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
