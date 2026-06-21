@@ -12,12 +12,15 @@ import { promisify } from 'util';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { createRequire } from 'module';
+
 const require = createRequire(import.meta.url);
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg');
 
 dotenv.config();
 const execAsync = promisify(exec);
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// ---------------- Firebase ----------------
 let db;
 try {
   if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
@@ -27,10 +30,18 @@ try {
   }
   db = getFirestore();
   console.log('[Firebase] OK');
-} catch (err) { console.error('[Firebase Error]', err.message); }
+} catch (err) {
+  console.error('[Firebase Error]', err.message);
+}
 
+// ---------------- App ----------------
 const app = express();
 const port = Number(process.env.PORT || 8787);
+app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+app.use(express.json({ limit: '20mb' }));
+app.use(express.static(join(__dirname, 'public')));
+
+// ---------------- AI Config ----------------
 function getAIConfig() {
   const apiKey = process.env.AI_API_KEY || process.env.GROQ_API_KEY || process.env.TOGETHER_API_KEY || process.env.OPENAI_API_KEY;
   const baseURL = process.env.AI_BASE_URL
@@ -43,20 +54,39 @@ function getAIConfig() {
     || 'gpt-4.1-mini';
   return { apiKey, baseURL, model };
 }
-
 const aiConfig = getAIConfig();
 const openai = new OpenAI({ apiKey: aiConfig.apiKey || 'missing-ai-key', baseURL: aiConfig.baseURL });
-const ttsApiKey = process.env.TTS_API_KEY || process.env.OPENAI_API_KEY;
-const ttsModel = process.env.TTS_MODEL || 'tts-1-hd';
-const ttsVoice = process.env.TTS_VOICE || 'onyx';
-const ttsClient = ttsApiKey ? new OpenAI({ apiKey: ttsApiKey }) : null;
 
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
-app.use(express.json({ limit: '10mb' }));
+const ttsClient = process.env.TTS_API_KEY || process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.TTS_API_KEY || process.env.OPENAI_API_KEY })
+  : null;
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-app.use(express.static(join(__dirname, 'public')));
+const ABACUS_API_KEY = process.env.ABACUS_API_KEY || '';
+const ABACUS_IMAGE_API_URL = process.env.ABACUS_IMAGE_API_URL || '';
+const ABACUS_VIDEO_API_URL = process.env.ABACUS_VIDEO_API_URL || '';
+const ABACUS_AUDIO_API_URL = process.env.ABACUS_AUDIO_API_URL || '';
 
+const STORAGE_DIR = join(__dirname, 'storage');
+const ANALYTICS_FILE = join(STORAGE_DIR, 'comment_analytics.json');
+const AUTOMATION_FILE = join(STORAGE_DIR, 'automation_config.json');
+fs.mkdirSync(STORAGE_DIR, { recursive: true });
+
+// ---------------- Logs ----------------
+const appLogs = [];
+function pushLog(message) {
+  appLogs.push({ time: new Date().toISOString(), message });
+  if (appLogs.length > 100) appLogs.shift();
+  console.log(message);
+}
+
+function ensureAI(req, res, next) {
+  if (!aiConfig.apiKey) {
+    return res.status(500).json({ ok: false, error: 'Falta API key de IA (AI_API_KEY / OPENAI_API_KEY / GROQ / TOGETHER).' });
+  }
+  next();
+}
+
+// ---------------- TikTok OAuth / Tokens ----------------
 const DEFAULT_TIKTOK_REDIRECT_URI = 'https://toktrend3.onrender.com/api/tiktok/oauth/callback';
 function normalizeTikTokRedirectUri(value) {
   const uri = String(value || '').trim();
@@ -65,7 +95,6 @@ function normalizeTikTokRedirectUri(value) {
 }
 const REDIRECT_URI = normalizeTikTokRedirectUri(process.env.TIKTOK_REDIRECT_URI);
 
-// PKCE
 const codeVerifiers = new Map();
 function storeVerifier(state, verifier) {
   codeVerifiers.set(state, { verifier, expires: Date.now() + 10 * 60 * 1000 });
@@ -83,30 +112,41 @@ function generatePKCE() {
   return { verifier, challenge };
 }
 
-// Token storage
 const TIKTOK_TOKEN_FILE = join(__dirname, 'tiktok_token.json');
 async function readToken() {
-  if (process.env.TIKTOK_TOKEN_JSON) { try { return JSON.parse(process.env.TIKTOK_TOKEN_JSON); } catch { return null; } }
-  if (db) { try { const doc = await db.collection('tokens').doc('tiktok').get(); if (doc.exists) return doc.data(); } catch {} }
-  if (fs.existsSync(TIKTOK_TOKEN_FILE)) { try { return JSON.parse(fs.readFileSync(TIKTOK_TOKEN_FILE, 'utf8')); } catch { return null; } }
+  if (process.env.TIKTOK_TOKEN_JSON) {
+    try { return JSON.parse(process.env.TIKTOK_TOKEN_JSON); } catch { return null; }
+  }
+  if (db) {
+    try {
+      const doc = await db.collection('tokens').doc('tiktok').get();
+      if (doc.exists) return doc.data();
+    } catch {}
+  }
+  if (fs.existsSync(TIKTOK_TOKEN_FILE)) {
+    try { return JSON.parse(fs.readFileSync(TIKTOK_TOKEN_FILE, 'utf8')); } catch { return null; }
+  }
   return null;
 }
+
 async function writeToken(data) {
   const withTs = { ...data, saved_at: Math.floor(Date.now() / 1000) };
   try { fs.writeFileSync(TIKTOK_TOKEN_FILE, JSON.stringify(withTs, null, 2)); } catch {}
-  if (db) { try { await db.collection('tokens').doc('tiktok').set(withTs); } catch {} }
+  if (db) {
+    try { await db.collection('tokens').doc('tiktok').set(withTs); } catch {}
+  }
 }
 
-// Auto-refresh token if expired
 async function getValidToken() {
-  let tokenData = await readToken();
+  const tokenData = await readToken();
   if (!tokenData?.access_token) return null;
+
   const now = Math.floor(Date.now() / 1000);
   const savedAt = tokenData.saved_at || 0;
   const expiresIn = tokenData.expires_in || 86400;
-  const isExpired = now >= (savedAt + expiresIn - 300); // refresh 5 min before expiry
+  const isExpired = now >= (savedAt + expiresIn - 300);
+
   if (isExpired && tokenData.refresh_token) {
-    console.log('[Token] Access token expired, attempting refresh...');
     try {
       const params = new URLSearchParams({
         client_key: process.env.TIKTOK_CLIENT_KEY,
@@ -119,324 +159,362 @@ async function getValidToken() {
       });
       if (!data.error) {
         await writeToken(data);
-        console.log('[Token] Refresh successful.');
         return data;
-      } else {
-        console.error('[Token Refresh Error]', data.error, data.error_description);
       }
     } catch (err) {
-      console.error('[Token Refresh Error]', err.response?.data || err.message);
+      pushLog(`[Token] refresh error: ${err.message}`);
     }
   }
+
   return isExpired ? null : tokenData;
 }
+
 async function deleteToken() {
   try { if (fs.existsSync(TIKTOK_TOKEN_FILE)) fs.unlinkSync(TIKTOK_TOKEN_FILE); } catch {}
-  if (db) { try { await db.collection('tokens').doc('tiktok').delete(); } catch {} }
-}
-
-// Dedup (60 days)
-const TWO_MONTHS_MS = 60 * 24 * 60 * 60 * 1000;
-async function saveUsedTopic(id) {
-  const now = Date.now();
-  if (db) { try { await db.collection('used_topics').doc(String(id)).set({ usedAt: now }); } catch {} }
-}
-
-function requireAI(req, res, next) {
-  if (!aiConfig.apiKey) return res.status(500).json({ ok: false, error: 'AI key missing. Set AI_API_KEY, GROQ_API_KEY, TOGETHER_API_KEY, or OPENAI_API_KEY.' });
-  next();
-}
-
-// Health
-const appLogs = [];
-const logError = (msg) => { appLogs.push({ time: new Date().toISOString(), msg }); if(appLogs.length > 20) appLogs.shift(); console.error(msg); };
-let lastTtsProvider = 'none';
-
-app.get('/health', async (req, res) => {
-  const token = await readToken();
-  const now = Math.floor(Date.now() / 1000);
-  const tokenExpiry = token?.saved_at && token?.expires_in ? token.saved_at + token.expires_in : null;
-  const tokenValid = token && (!tokenExpiry || now < tokenExpiry - 60);
-  res.json({ ok: true, version: "gtts-v8-upload-18", aiModel: aiConfig.model, aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1', ttsModel, ttsVoice, ttsConfigured: Boolean(ttsClient), lastTtsProvider, tiktokConnected: Boolean(token), tokenValid: tokenValid, tokenExpiresAt: tokenExpiry ? new Date(tokenExpiry * 1000).toISOString() : null, time: new Date().toISOString(), logs: appLogs });
-});
-
-// Disconnect TikTok
-app.post('/api/tiktok/disconnect', async (req, res) => {
-  await deleteToken();
-  res.json({ ok: true });
-});
-
-// Generate script (world-class speaker)
-function fallbackScriptData(topic) {
-  return {
-    title: topic.slice(0, 80),
-    script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. Aqui viene lo interesante: ${topic} no es solo una idea para mirar de pasada, es una historia que puede atrapar si la contamos con tension. Primero vemos el detalle que todos reconocen, pero enseguida aparece la pregunta que hace que no puedas soltarlo: por que esto importa, por que nos llama tanto la atencion, y que dice de nosotros. Imagina imagenes potentes, ritmo rapido, cortes visuales precisos y una narracion que no camina, acelera. Lo que casi nadie nota es que un buen video no solo informa; abre una curiosidad, la estira, y luego entrega una recompensa. Por eso cada escena debe sentirse como una pista: una imagen que sorprende, un dato que cambia el contexto, una frase que provoca respuesta. Y esta es la parte clave: si el espectador se reconoce en la historia, comenta. Si le despiertas una duda, se queda. Si le das una postura, responde. Dejame tu comentario, aprendo de ti.`,
-    description: `${topic} - IA autonoma que aprende de tus comentarios. #TokTrend`,
-    hashtags: ['#TokTrend','#IA','#Viral','#Aprende','#Cultura'],
-    shots: [`Plano cinematografico sobre ${topic}`,'Detalle visual del tema','Escena dinamica con movimiento','Primer plano emocional','Ambiente moderno y profesional','Momento aspiracional','Cierre visual impactante'],
-    image_queries: [topic, `${topic} detail`, `${topic} motion`, `${topic} close up`, `${topic} modern`, `${topic} lifestyle`, `${topic} cinematic`]
-  };
-}
-
-function normalizeScriptData(data, topic) {
-  const fallback = fallbackScriptData(topic);
-  if (data && typeof data === 'object') {
-    data.script = data.script || data.guion || data.narracion || data.dialogo;
-    data.image_queries = data.image_queries || data.consultas_imagen || data.busquedas_imagenes;
+  if (db) {
+    try { await db.collection('tokens').doc('tiktok').delete(); } catch {}
   }
-  const normalized = { ...fallback, ...(data && typeof data === 'object' ? data : {}) };
-  normalized.title = String(normalized.title || fallback.title).slice(0, 80);
-  normalized.script = String(normalized.script || fallback.script);
-  if (normalized.script.split(/\s+/).filter(Boolean).length < 140) normalized.script = fallback.script;
-  normalized.description = String(normalized.description || fallback.description).slice(0, 300);
-  normalized.hashtags = Array.isArray(normalized.hashtags) && normalized.hashtags.length ? normalized.hashtags : fallback.hashtags;
-  normalized.shots = Array.isArray(normalized.shots) && normalized.shots.length >= 7 ? normalized.shots.slice(0, 7) : fallback.shots;
-  normalized.image_queries = Array.isArray(normalized.image_queries) && normalized.image_queries.length >= 7 ? normalized.image_queries.slice(0, 7) : fallback.image_queries;
-  return normalized;
 }
 
-function estimateVideoSeconds(script) {
-  const words = String(script || '').split(/\s+/).filter(Boolean).length;
-  return Math.max(29, Math.min(90, Math.ceil((words / 2.45) + 3)));
+// ---------------- Data utils ----------------
+function readJSONSafe(path, fallback) {
+  try {
+    if (!fs.existsSync(path)) return fallback;
+    return JSON.parse(fs.readFileSync(path, 'utf8'));
+  } catch {
+    return fallback;
+  }
 }
 
-async function generateScript(topic) {
-const prompt = `Eres un estratega de contenido viral, guionista de TikTok y narrador cinematografico de alto impacto.
-Crea un guion completo en espanol para un video vertical sobre el tema: "${topic}".
+function writeJSONSafe(path, data) {
+  fs.writeFileSync(path, JSON.stringify(data, null, 2));
+}
 
-OBJETIVO:
-El video debe sonar como contenido de un creador grande: rapido, curioso, emocional, con tension y cero monotonia. No imites ni copies frases, voz o estilo exacto de ninguna persona famosa. Usa tecnicas generales de creadores exitosos: gancho inmediato, curiosidad abierta, contraste, mini historia, reenganche, payoff y pregunta final.
+function uniqueByText(items) {
+  const seen = new Set();
+  return items.filter((x) => {
+    const k = String(x.topic || '').toLowerCase().trim();
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
 
-INSTRUCCIONES ESTRICTAS:
-- Empieza SIEMPRE con: "Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios."
-- Justo despues de esa frase, lanza un gancho fuerte: sorpresa, pregunta, dato extremo o contradiccion.
-- Estructura invisible del guion: Hook -> contexto rapido -> tension -> giro/reenganche -> payoff -> comentario.
-- Cada 1 o 2 frases debe haber una razon para seguir escuchando: "pero aqui viene lo increible", "lo que casi nadie nota", "y esta es la parte que cambia todo".
-- Alterna frases cortas con frases mas intensas para que la narracion respire y no suene plana.
-- Usa imagenes mentales concretas, verbos de accion y palabras sensoriales. Evita relleno generico.
-- El dialogo debe ser continuo y fluido. Hazlo tan largo como sea necesario para enganchar bien: normalmente 160-240 palabras; si el tema lo merece, hasta 320 palabras.
-- El campo "script" NUNCA puede ser un resumen corto. Debe tener minimo 150 palabras.
-- Tono: apasionado, cercano, culto, curioso y magnetico. Nunca aburrido. Habla directamente al espectador.
-- No digas "bienvenidos", "en este video", "hoy vamos a hablar" ni frases de intro lenta.
-- Termina con: "Dejame tu comentario, aprendo de ti."
-- El title debe sonar como titulo viral, con curiosidad, maximo 80 caracteres.
-- Las shots deben ser visuales y especificas, no genericas: cada escena debe poder buscarse como imagen/video real.
-- image_queries deben estar en ingles y ser concretas para Wikimedia/imagenes.
+// ---------------- Trending engine ----------------
+async function getGoogleTrending(limit = 10) {
+  try {
+    const { data: xml } = await axios.get('https://trends.google.com/trending/rss?geo=US', { timeout: 12000 });
+    const items = [...String(xml).matchAll(/<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<ht:approx_traffic>(.*?)<\/ht:approx_traffic>[\s\S]*?<\/item>/g)]
+      .slice(0, limit)
+      .map((m) => ({
+        topic: m[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
+        source: 'google_trends',
+        score: Number(String(m[2]).replace(/[^\d]/g, '')) || 0,
+        rawTraffic: m[2]
+      }));
+    return items;
+  } catch (err) {
+    pushLog(`[Trends] Google error: ${err.message}`);
+    return [];
+  }
+}
 
-    Devuelve SOLO este JSON valido, sin markdown, sin explicaciones y sin texto fuera del objeto.
-    Las claves deben llamarse EXACTAMENTE: title, script, description, hashtags, shots, image_queries.
-    {
-      "title": "Titulo del video (max 80 chars)",
-      "script": "El guion completo narrado en primera persona (160-320 palabras)",
-      "description": "Descripcion TikTok con contexto y call-to-action (max 300 chars)",
-      "hashtags": ["#tag1","#tag2","#tag3","#tag4","#tag5","#tag6","#tag7","#tag8"],
-      "shots": ["Descripcion visual escena 1","Escena 2","Escena 3","Escena 4","Escena 5","Escena 6","Escena 7"],
-      "image_queries": ["1-2 english keywords for scene 1 (e.g. galaxy)", "english keywords for scene 2", "english keywords for scene 3", "english keywords for scene 4", "english keywords for scene 5", "english keywords for scene 6", "english keywords for scene 7"]
-    }`;
+async function getRedditTrending(limit = 10) {
+  try {
+    const { data } = await axios.get('https://www.reddit.com/r/popular/hot.json?limit=30', { timeout: 12000, headers: { 'User-Agent': 'toktrend3/1.0' } });
+    const children = data?.data?.children || [];
+    return children.slice(0, limit).map((item) => ({
+      topic: item?.data?.title?.slice(0, 120),
+      source: 'reddit_hot',
+      score: Number(item?.data?.ups || 0)
+    })).filter((x) => x.topic);
+  } catch (err) {
+    pushLog(`[Trends] Reddit error: ${err.message}`);
+    return [];
+  }
+}
+
+async function getTikTokTrending(limit = 10) {
+  const endpoint = process.env.TIKTOK_TRENDS_API_URL;
+  if (!endpoint) return [];
+  try {
+    const { data } = await axios.get(endpoint, {
+      timeout: 15000,
+      headers: process.env.TIKTOK_TRENDS_API_KEY ? { Authorization: `Bearer ${process.env.TIKTOK_TRENDS_API_KEY}` } : undefined
+    });
+    const arr = Array.isArray(data) ? data : data?.data || data?.trends || [];
+    return arr.slice(0, limit).map((it) => ({
+      topic: it.name || it.keyword || it.title || it.hashtag,
+      source: 'tiktok_api',
+      score: Number(it.score || it.views || it.popularity || 0)
+    })).filter((x) => x.topic);
+  } catch (err) {
+    pushLog(`[Trends] TikTok trends API error: ${err.message}`);
+    return [];
+  }
+}
+
+async function detectTrendingTopics(limit = 20) {
+  const [google, reddit, tiktok] = await Promise.all([
+    getGoogleTrending(limit),
+    getRedditTrending(limit),
+    getTikTokTrending(limit)
+  ]);
+  const merged = uniqueByText([...tiktok, ...google, ...reddit])
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, limit)
+    .map((x, idx) => ({ ...x, rank: idx + 1 }));
+  return merged;
+}
+
+// ---------------- Abacus media adapters ----------------
+function maybeParseJSON(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+async function callAbacusMediaAPI(apiUrl, payload) {
+  if (!apiUrl || !ABACUS_API_KEY) return null;
+  try {
+    const { data } = await axios.post(apiUrl, payload, {
+      timeout: 120000,
+      headers: {
+        Authorization: `Bearer ${ABACUS_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    return data;
+  } catch (err) {
+    pushLog(`[Abacus API] ${apiUrl} error: ${err.response?.status || ''} ${err.message}`);
+    return null;
+  }
+}
+
+async function generateImageWithAbacus(prompt, outPath) {
+  const data = await callAbacusMediaAPI(ABACUS_IMAGE_API_URL, {
+    prompt,
+    aspect_ratio: '9:16',
+    quality: 'high',
+    style: 'cinematic',
+    format: 'jpg'
+  });
+  if (!data) return false;
+
+  const imageUrl = data.image_url || data.url || data.output_url || data?.result?.url;
+  const base64 = data.image_base64 || data.base64 || data?.result?.base64;
+
+  try {
+    if (imageUrl) {
+      const resp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 60000 });
+      fs.writeFileSync(outPath, Buffer.from(resp.data));
+      return true;
+    }
+    if (base64) {
+      fs.writeFileSync(outPath, Buffer.from(base64, 'base64'));
+      return true;
+    }
+  } catch (err) {
+    pushLog(`[Abacus image download] error: ${err.message}`);
+  }
+  return false;
+}
+
+async function generateNarrationWithAbacus(script, outputPath) {
+  const data = await callAbacusMediaAPI(ABACUS_AUDIO_API_URL, {
+    text: script,
+    language: 'es',
+    voice_style: 'professional-natural',
+    format: 'mp3',
+    quality: 'high'
+  });
+  if (!data) return false;
+
+  const audioUrl = data.audio_url || data.url || data.output_url || data?.result?.url;
+  const base64 = data.audio_base64 || data.base64 || data?.result?.base64;
+  try {
+    if (audioUrl) {
+      const resp = await axios.get(audioUrl, { responseType: 'arraybuffer', timeout: 120000 });
+      fs.writeFileSync(outputPath, Buffer.from(resp.data));
+      return true;
+    }
+    if (base64) {
+      fs.writeFileSync(outputPath, Buffer.from(base64, 'base64'));
+      return true;
+    }
+  } catch (err) {
+    pushLog(`[Abacus audio download] error: ${err.message}`);
+  }
+  return false;
+}
+
+async function generateVideoWithAbacus(prompts, outputPath) {
+  const data = await callAbacusMediaAPI(ABACUS_VIDEO_API_URL, {
+    prompts,
+    aspect_ratio: '9:16',
+    style: 'cinematic documentary',
+    quality: 'high'
+  });
+  if (!data) return false;
+  const videoUrl = data.video_url || data.url || data.output_url || data?.result?.url;
+  const base64 = data.video_base64 || data.base64 || data?.result?.base64;
+  try {
+    if (videoUrl) {
+      const resp = await axios.get(videoUrl, { responseType: 'arraybuffer', timeout: 120000 });
+      fs.writeFileSync(outputPath, Buffer.from(resp.data));
+      return true;
+    }
+    if (base64) {
+      fs.writeFileSync(outputPath, Buffer.from(base64, 'base64'));
+      return true;
+    }
+  } catch (err) {
+    pushLog(`[Abacus video download] error: ${err.message}`);
+  }
+  return false;
+}
+
+// ---------------- Content generation ----------------
+function normalizeScriptData(data, topic) {
+  const fallback = {
+    title: `Impacto de ${topic}`.slice(0, 80),
+    script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. ${topic} no es un tema cualquiera: es una puerta para entender cambios reales en nuestro mundo. Si observas con detalle, veras un patron que conecta personas, cultura y decisiones cotidianas. Lo potente es que cada tendencia tiene una historia oculta y una oportunidad de aprendizaje. Quiero que en este video detectes el giro clave, el dato que cambia la perspectiva y la pregunta que te obliga a pensar mas profundo. Dejame tu comentario, aprendo de ti.`,
+    description: `${topic} explicado en formato cinematográfico y accionable.`,
+    hashtags: ['#TokTrend', '#IA', '#Cine', '#Tendencias', '#Aprendizaje'],
+    shots: [
+      `Plano épico de apertura sobre ${topic}`,
+      'Detalle en movimiento con profundidad de campo',
+      'Transición con cámara travelling lateral',
+      'Close-up dramático con luz volumétrica',
+      'Escena urbana moderna con ritmo rápido',
+      'Plano simbólico que represente transformación',
+      'Cierre emocional con composición cinematográfica'
+    ],
+    image_queries: [
+      `${topic} cinematic wide shot`,
+      `${topic} dramatic close up`,
+      `${topic} futuristic city`,
+      `${topic} storytelling visual`,
+      `${topic} documentary lighting`,
+      `${topic} high detail texture`,
+      `${topic} emotional finale`
+    ]
+  };
+
+  const merged = { ...fallback, ...(data || {}) };
+  merged.title = String(merged.title || fallback.title).slice(0, 80);
+  merged.script = String(merged.script || fallback.script);
+  merged.description = String(merged.description || fallback.description).slice(0, 300);
+  merged.hashtags = Array.isArray(merged.hashtags) && merged.hashtags.length ? merged.hashtags.slice(0, 12) : fallback.hashtags;
+  merged.shots = Array.isArray(merged.shots) && merged.shots.length ? merged.shots.slice(0, 7) : fallback.shots;
+  merged.image_queries = Array.isArray(merged.image_queries) && merged.image_queries.length ? merged.image_queries.slice(0, 7) : fallback.image_queries;
+  return merged;
+}
+
+async function generateScript(topic, learningContext = '') {
+  const prompt = `Eres estratega viral de TikTok y director cinematográfico.
+Genera SOLO JSON válido para un video de 30-45s en español sobre: "${topic}".
+Incluye gancho, narrativa, tensión y cierre con CTA.
+Debes empezar el script con: "Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios."
+Termina con: "Dejame tu comentario, aprendo de ti."
+Usa este contexto de aprendizaje (si existe): ${learningContext || 'sin contexto'}
+
+Formato exacto:
+{
+ "title": "...",
+ "script": "...",
+ "description": "...",
+ "hashtags": ["#..."],
+ "shots": ["..."],
+ "image_queries": ["english prompt ..."]
+}`;
 
   const response = await openai.chat.completions.create({
     model: aiConfig.model,
     messages: [{ role: 'user', content: prompt }],
-    max_tokens: 900,
-    temperature: 0.88
+    temperature: 0.8,
+    max_tokens: 1000
   });
-  let text = response.choices[0]?.message?.content?.trim() || '{}';
-  text = text.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
-  const jsonStart = text.indexOf('{');
-  const jsonEnd = text.lastIndexOf('}');
-  if (jsonStart >= 0 && jsonEnd > jsonStart) text = text.slice(jsonStart, jsonEnd + 1);
-  try { return normalizeScriptData(JSON.parse(text), topic); }
-  catch (err) {
-    logError(`[AI Parse Warning] ${err.message}. Raw: ${text.slice(0, 300)}`);
-    return {
-      title: topic.slice(0, 80),
-      script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. Hoy quiero hablarte de ${topic}. Un tema fascinante que merece toda tu atencion. Dejame tu comentario, aprendo de ti.`,
-      description: `${topic} — IA autonoma que aprende de tus comentarios. #TokTrend`,
-      hashtags: ['#TokTrend','#IA','#Viral','#Aprende','#Cultura'],
-      shots: ['Escena 1','Escena 2','Escena 3','Escena 4','Escena 5','Escena 6','Escena 7'],
-      image_queries: ['abstract', 'technology', 'future', 'science', 'universe', 'digital', 'knowledge']
-    };
-  }
+
+  let text = response.choices?.[0]?.message?.content?.trim() || '{}';
+  text = text.replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
+  const parsed = maybeParseJSON(text);
+  return normalizeScriptData(parsed, topic);
 }
 
-// Fetch images from Wikimedia Commons using specific queries
-async function fetchImages(queries, outputDir) {
+async function fetchFallbackImage(query, outputPath, idx = 0) {
+  const colors = ['0xf97316', '0x14b8a6', '0x2563eb', '0xdb2777', '0x84cc16', '0x8b5cf6', '0x22d3ee'];
+  try {
+    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query + ' filetype:bitmap')}&gsrnamespace=6&prop=imageinfo&iiprop=url|mime&iiurlwidth=1080&format=json&gsrlimit=8`;
+    const { data } = await axios.get(url, { timeout: 12000 });
+    const pages = Object.values(data?.query?.pages || {});
+    const candidate = pages.map((p) => p?.imageinfo?.[0]).find((img) => img?.thumburl);
+    if (candidate?.thumburl) {
+      const imgResp = await axios.get(candidate.thumburl, { responseType: 'arraybuffer', timeout: 15000 });
+      fs.writeFileSync(outputPath, Buffer.from(imgResp.data));
+      return true;
+    }
+  } catch {}
+
+  await execAsync(`"${ffmpegPath.path}" -f lavfi -i "color=c=${colors[idx % colors.length]}:s=1080x1920" -frames:v 1 -y "${outputPath}"`);
+  return true;
+}
+
+async function generateImages(prompts, outputDir) {
   fs.mkdirSync(outputDir, { recursive: true });
-  let images = [];
-  const colors = ['0xf97316', '0x14b8a6', '0x2563eb', '0xdb2777', '0x84cc16', '0xfacc15', '0x06b6d4'];
-  const wikiHeaders = {
-    'User-Agent': 'TokTrend/1.0 (https://toktrend3.onrender.com)',
-    'Accept': 'application/json,image/*,*/*'
-  };
-
-  async function createFallbackImage(filePath, i) {
-    const color = colors[i % colors.length];
-    await execAsync(`"${ffmpegPath.path}" -f lavfi -i "color=c=${color}:s=1080x1920" -frames:v 1 -y "${filePath}"`);
-  }
-
+  const imagePaths = [];
   for (let i = 0; i < 7; i++) {
-    const filePath = join(outputDir, `img_${i}.jpg`);
-    let downloaded = false;
-    const query = queries[i] || queries[0] || 'abstract';
+    const p = prompts[i] || prompts[0] || 'cinematic storytelling';
+    const outPath = join(outputDir, `img_${i}.jpg`);
+    let ok = false;
 
-    try {
-      const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query + ' filetype:bitmap')}&gsrnamespace=6&prop=imageinfo&iiprop=url|mime|size&iiurlwidth=1080&format=json&gsrlimit=10`;
-      const res = await axios.get(url, { timeout: 15000, headers: wikiHeaders });
-      const pages = res.data.query?.pages;
-      if (pages) {
-        const candidates = Object.values(pages)
-          .map(p => p?.imageinfo?.[0])
-          .filter(info => info?.thumburl && /^image\/(jpeg|png|webp)$/i.test(info.mime || '') && info.width >= 600 && info.height >= 400);
-        for (const info of candidates) {
-          try {
-            const imgUrl = info.thumburl || info.url;
-            const imgRes = await axios({
-              url: imgUrl,
-              method: 'GET',
-              responseType: 'arraybuffer',
-              timeout: 20000,
-              headers: wikiHeaders,
-              maxRedirects: 5
-            });
-            const type = String(imgRes.headers?.['content-type'] || '');
-            if (!/^image\/(jpeg|png|webp)/i.test(type) || imgRes.data.byteLength < 5000) continue;
-            fs.writeFileSync(filePath, Buffer.from(imgRes.data));
-            images.push(filePath);
-            downloaded = true;
-            console.log(`[Images] Downloaded ${query} -> ${imgUrl}`);
-            break;
-          } catch (downloadErr) {
-            console.error(`[Images] Candidate failed for ${query}: ${downloadErr.message}`);
-          }
-        }
-      }
-    } catch (e) { console.error(`[Images] Failed to fetch for query: ${query}`); }
-
-    if (!downloaded) {
-      // Bright fallback, never black, so failed downloads are visible in the final video.
-      try { await createFallbackImage(filePath, i); } catch {}
-      images.push(filePath);
-      console.log(`[Images] Fallback color for query: ${query}`);
+    if (ABACUS_IMAGE_API_URL && ABACUS_API_KEY) {
+      ok = await generateImageWithAbacus(p, outPath);
     }
+    if (!ok) {
+      await fetchFallbackImage(p, outPath, i);
+    }
+    imagePaths.push(outPath);
   }
-
-  while (images.length < 7) images.push(images[images.length - 1] || images[0]);
-  return images.slice(0, 7);
+  return imagePaths;
 }
 
-async function concatenateMp3Files(tempFiles, outputPath) {
-  if (tempFiles.length === 1) {
-    fs.renameSync(tempFiles[0], outputPath);
-    return;
+async function generateNarration(script, outputPath) {
+  let generated = false;
+  if (ABACUS_AUDIO_API_URL && ABACUS_API_KEY) {
+    generated = await generateNarrationWithAbacus(script, outputPath);
   }
 
-  const { createRequire } = await import('module');
-  const req = createRequire(import.meta.url);
-  const ffmpegPath = req('@ffmpeg-installer/ffmpeg').path;
-  const { execFile } = req('child_process');
-  const listFile = outputPath + '.list.txt';
-  fs.writeFileSync(listFile, tempFiles.map(f => `file '${f}'`).join('\n'));
-  await new Promise((resolve, reject) => {
-    execFile(ffmpegPath, ['-f','concat','-safe','0','-i',listFile,'-c','copy',outputPath,'-y'], (err) => {
-      tempFiles.forEach(f => { try { fs.unlinkSync(f); } catch {} });
-      try { fs.unlinkSync(listFile); } catch {}
-      err ? reject(err) : resolve();
+  if (!generated) {
+    if (!ttsClient) throw new Error('TTS no configurado. Configura OPENAI_API_KEY o TTS_API_KEY.');
+    const tts = await ttsClient.audio.speech.create({
+      model: process.env.TTS_MODEL || 'tts-1-hd',
+      voice: process.env.TTS_VOICE || 'nova',
+      input: script,
+      response_format: 'mp3',
+      speed: Number(process.env.TTS_SPEED || 0.95)
     });
-  });
-}
-
-async function generateProfessionalAudio(script, outputPath) {
-  if (!ttsClient) throw new Error('TTS_API_KEY or OPENAI_API_KEY missing');
-  const response = await ttsClient.audio.speech.create({
-    model: ttsModel,
-    voice: ttsVoice,
-    input: script,
-    response_format: 'mp3',
-    speed: Number(process.env.TTS_SPEED || 0.96)
-  });
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length < 1000) throw new Error('Professional TTS returned empty audio');
-  fs.writeFileSync(outputPath, buffer);
-  lastTtsProvider = `openai:${ttsModel}/${ttsVoice}`;
-  console.log(`[TTS] Audio profesional generado: ${ttsModel}/${ttsVoice}`);
-}
-
-async function generateGoogleFallbackAudio(script, outputPath) {
-  function splitText(txt, maxLen = 180) {
-    const words = txt.split(' ');
-    const chunks = [];
-    let current = '';
-    for (const word of words) {
-      if ((current + ' ' + word).trim().length <= maxLen) {
-        current = (current + ' ' + word).trim();
-      } else {
-        if (current) chunks.push(current);
-        current = word;
-      }
-    }
-    if (current) chunks.push(current);
-    return chunks;
+    fs.writeFileSync(outputPath, Buffer.from(await tts.arrayBuffer()));
   }
-
-  const chunks = splitText(script);
-  const tempFiles = [];
-
-  for (let i = 0; i < chunks.length; i++) {
-    const encoded = encodeURIComponent(chunks[i]);
-    const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=es&total=${chunks.length}&idx=${i}&textlen=${chunks[i].length}&client=tw-ob&prev=input&ttsspeed=0.9`;
-    const tempFile = outputPath + `.chunk${i}.mp3`;
-    let attempts = 0;
-    while (attempts < 3) {
-      try {
-        const resp = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://translate.google.com/',
-            'Accept': 'audio/mpeg, audio/*, */*'
-          }
-        });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const buf = Buffer.from(await resp.arrayBuffer());
-        if (buf.length < 100) throw new Error('Empty audio');
-        fs.writeFileSync(tempFile, buf);
-        tempFiles.push(tempFile);
-        break;
-      } catch(e) {
-        attempts++;
-        if (attempts >= 3) throw new Error(`TTS chunk ${i} failed: ${e.message}`);
-        await new Promise(r => setTimeout(r, 1500 * attempts));
-      }
-    }
-    if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 500));
-  }
-
-  await concatenateMp3Files(tempFiles, outputPath);
-  lastTtsProvider = 'google-fallback';
-  console.log('[TTS] Audio fallback generado:', outputPath);
 }
 
-// Professional TTS first; Google fallback only if the paid voice is unavailable.
-async function generateAudio(script, outputPath) {
-  if (process.env.TTS_PROVIDER !== 'google') {
-    try {
-      await generateProfessionalAudio(script, outputPath);
-      return;
-    } catch (err) {
-      logError('[TTS Warning] Professional voice failed, using fallback: ' + err.message);
-    }
-  }
-  await generateGoogleFallbackAudio(script, outputPath);
+function estimateSeconds(script) {
+  const words = String(script || '').split(/\s+/).filter(Boolean).length;
+  return Math.max(30, Math.min(55, Math.ceil(words / 2.4)));
 }
 
-// Build MP4 with ffmpeg
-async function buildVideo(images, audioPath, outputPath, totalSeconds = 29) {
-  const perImage = (totalSeconds / images.length).toFixed(3);
-  const imageInputs = images.map(p => `-loop 1 -t ${perImage} -i "${p}"`).join(' ');
-  const scaledStreams = images.map((_, i) =>
-    `[${i}:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p[v${i}]`
-  ).join(';');
-  const concatStreams = images.map((_, i) => `[v${i}]`).join('');
-  const filter = `${scaledStreams};${concatStreams}concat=n=${images.length}:v=1:a=0,format=yuv420p[v]`;
+async function buildCinematicVideo(images, audioPath, outputPath, totalSeconds) {
+  const perImage = (totalSeconds / images.length).toFixed(2);
+  const imageInputs = images.map((p) => `-loop 1 -t ${perImage} -i "${p}"`).join(' ');
+
+  const visualFilters = images.map((_, i) => {
+    const zoomStart = 1.0 + (i % 3) * 0.03;
+    const zoomEnd = zoomStart + 0.1;
+    return `[${i}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='if(lte(on,1),${zoomStart},min(zoom+0.0012,${zoomEnd}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=75:s=1080x1920,fps=30,format=yuv420p[v${i}]`;
+  }).join(';');
+
+  const concatChain = images.map((_, i) => `[v${i}]`).join('');
+  const filter = `${visualFilters};${concatChain}concat=n=${images.length}:v=1:a=0[v]`;
 
   const cmd = [
     `"${ffmpegPath.path}" -y`,
@@ -444,226 +522,511 @@ async function buildVideo(images, audioPath, outputPath, totalSeconds = 29) {
     `-i "${audioPath}"`,
     `-filter_complex "${filter}"`,
     `-map "[v]" -map ${images.length}:a`,
-    `-c:v libx264 -preset faster -profile:v high -level 4.1 -crf 23 -maxrate 3500k -bufsize 7000k -g 30 -bf 0 -threads 2 -pix_fmt yuv420p`,
-    `-c:a aac -b:a 128k -ar 44100 -ac 2`,
-    `-shortest -movflags +faststart -t ${totalSeconds}`,
+    '-c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p',
+    '-c:a aac -b:a 192k -ar 48000 -ac 2',
+    `-shortest -t ${totalSeconds} -movflags +faststart`,
     `"${outputPath}"`
   ].join(' ');
-  await execAsync(cmd, { maxBuffer: 100 * 1024 * 1024 });
-  console.log('[ffmpeg] Video OK:', outputPath);
+
+  await execAsync(cmd, { maxBuffer: 150 * 1024 * 1024 });
 }
 
-// Main generate endpoint
-app.get('/api/generate', requireAI, async (req, res) => {
+async function saveGeneratedRecord(record) {
+  if (db) {
+    try {
+      await db.collection('generated_videos').doc(record.sessionId).set(record);
+      return;
+    } catch {}
+  }
+  const localPath = join(STORAGE_DIR, 'generated_videos.json');
+  const arr = readJSONSafe(localPath, []);
+  arr.unshift(record);
+  writeJSONSafe(localPath, arr.slice(0, 300));
+}
+
+async function getLearningContext() {
+  const analytics = readJSONSafe(ANALYTICS_FILE, { insights: [] });
+  return (analytics.insights || []).slice(0, 8).join(' | ');
+}
+
+async function generateVideoPipeline({ topic, source = 'manual' }) {
+  const sessionId = crypto.randomBytes(8).toString('hex');
+  const workDir = join(__dirname, 'public', 'videos', sessionId);
+  fs.mkdirSync(workDir, { recursive: true });
+
+  const learningContext = await getLearningContext();
+  const scriptData = await generateScript(topic, learningContext);
+  const imgDir = join(workDir, 'imgs');
+  const images = await generateImages(scriptData.image_queries || [topic], imgDir);
+  const audioPath = join(workDir, 'narration.mp3');
+  await generateNarration(scriptData.script, audioPath);
+
+  const videoPath = join(workDir, 'video.mp4');
+  const duration = estimateSeconds(scriptData.script);
+
+  let usedAbacusVideo = false;
+  if (ABACUS_VIDEO_API_URL && ABACUS_API_KEY) {
+    usedAbacusVideo = await generateVideoWithAbacus(scriptData.shots, videoPath);
+  }
+  if (!usedAbacusVideo) {
+    await buildCinematicVideo(images, audioPath, videoPath, duration);
+  }
+
+  const record = {
+    sessionId,
+    topic,
+    source,
+    title: scriptData.title,
+    createdAt: Date.now(),
+    duration,
+    usedAbacusVideo,
+    hasAbacusImage: Boolean(ABACUS_IMAGE_API_URL && ABACUS_API_KEY),
+    hasAbacusAudio: Boolean(ABACUS_AUDIO_API_URL && ABACUS_API_KEY)
+  };
+  await saveGeneratedRecord(record);
+
+  setTimeout(() => {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+  }, 60 * 60 * 1000);
+
+  return {
+    ok: true,
+    sessionId,
+    topic,
+    duration,
+    videoUrl: `/videos/${sessionId}/video.mp4`,
+    scriptData,
+    slides: images.map((_, i) => ({
+      url: `/videos/${sessionId}/imgs/img_${i}.jpg`,
+      description: scriptData.shots?.[i] || `Escena ${i + 1}`,
+      duration: Number((duration / images.length).toFixed(1))
+    }))
+  };
+}
+
+// ---------------- TikTok publish ----------------
+async function initTikTokPublish(token, payload) {
   try {
-    const topic = (req.query.q || 'Historia del arte').slice(0, 200);
-    const sessionId = crypto.randomBytes(8).toString('hex');
-    const workDir = join(__dirname, 'public', 'videos', sessionId);
-    fs.mkdirSync(workDir, { recursive: true });
-
-    console.log('[Generate] Topic:', topic);
-    const scriptData = await generateScript(topic);
-    const imgDir = join(workDir, 'imgs');
-    const images = await fetchImages(scriptData.image_queries || [topic], imgDir);
-    const audioPath = join(workDir, 'narration.mp3');
-    await generateAudio(scriptData.script, audioPath);
-    const videoPath = join(workDir, 'video.mp4');
-    const totalSeconds = estimateVideoSeconds(scriptData.script);
-    await buildVideo(images, audioPath, videoPath, totalSeconds);
-    await saveUsedTopic(sessionId);
-
-    if (db) { try { await db.collection('generated_videos').doc(sessionId).set({ topic, title: scriptData.title, createdAt: Date.now() }); } catch {} }
-
-    setTimeout(() => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {} }, 30 * 60 * 1000);
-
-    res.json({
-      ok: true,
-      sessionId,
-      videoUrl: `/videos/${sessionId}/video.mp4`,
-      ttsProvider: lastTtsProvider,
-      duration: totalSeconds,
-      scriptData,
-      slides: images.map((_, i) => ({ url: `/videos/${sessionId}/imgs/img_${i}.jpg`, description: scriptData.shots?.[i] || `Escena ${i+1}`, duration: Number((totalSeconds / images.length).toFixed(1)) }))
+    const direct = await axios.post('https://open.tiktokapis.com/v2/post/publish/video/init/', payload, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' }
     });
+    return { method: 'DIRECT_POST', data: direct.data };
+  } catch (directErr) {
+    const code = directErr.response?.data?.error?.code;
+    if (code !== 'unaudited_client_can_only_post_to_private_accounts') throw directErr;
+
+    const inbox = await axios.post('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', { source_info: payload.source_info }, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' }
+    });
+    return { method: 'INBOX_UPLOAD', data: inbox.data };
+  }
+}
+
+async function uploadFileChunks(uploadUrl, fileBuffer) {
+  const videoSize = fileBuffer.length;
+  let chunkSize = 10 * 1024 * 1024;
+  let totalChunks = Math.ceil(videoSize / chunkSize);
+  if (videoSize <= chunkSize) {
+    chunkSize = videoSize;
+    totalChunks = 1;
+  }
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * chunkSize;
+    const end = i === totalChunks - 1 ? videoSize : start + chunkSize;
+    const chunk = fileBuffer.slice(start, end);
+
+    await axios.put(uploadUrl, chunk, {
+      headers: {
+        'Content-Type': 'video/mp4',
+        'Content-Range': `bytes ${start}-${end - 1}/${videoSize}`,
+        'Content-Length': chunk.length
+      },
+      timeout: 120000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
+    });
+  }
+
+  return { videoSize, chunkSize, totalChunks };
+}
+
+async function publishSessionToTikTok({ sessionId, title, description }) {
+  const tokenData = await getValidToken();
+  if (!tokenData?.access_token) throw new Error('TikTok no conectado.');
+
+  const videoPath = join(__dirname, 'public', 'videos', sessionId, 'video.mp4');
+  if (!fs.existsSync(videoPath)) throw new Error('Video no encontrado para publicar.');
+
+  const videoBuffer = fs.readFileSync(videoPath);
+  const sourceInfo = {
+    source: 'FILE_UPLOAD',
+    video_size: videoBuffer.length,
+    chunk_size: Math.min(videoBuffer.length, 10 * 1024 * 1024),
+    total_chunk_count: Math.ceil(videoBuffer.length / (10 * 1024 * 1024))
+  };
+
+  const payload = {
+    post_info: {
+      title: (title || 'TokTrend IA').slice(0, 80),
+      description: (description || 'Video generado con TokTrend IA').slice(0, 2200),
+      privacy_level: 'SELF_ONLY',
+      disable_comment: false,
+      auto_add_music: false
+    },
+    source_info: sourceInfo
+  };
+
+  const init = await initTikTokPublish(tokenData.access_token, payload);
+  const uploadUrl = init.data?.data?.upload_url;
+  const publishId = init.data?.data?.publish_id;
+  if (!uploadUrl) throw new Error('TikTok no devolvió upload_url');
+
+  await uploadFileChunks(uploadUrl, videoBuffer);
+  return {
+    publishId,
+    method: init.method,
+    message: init.method === 'INBOX_UPLOAD'
+      ? 'Video subido a TikTok Inbox. Revísalo y publícalo desde la app de TikTok.'
+      : 'Video publicado en TikTok.'
+  };
+}
+
+// ---------------- Learning system ----------------
+async function fetchTikTokComments(videoId, count = 50) {
+  const tokenData = await getValidToken();
+  if (!tokenData?.access_token) throw new Error('TikTok no conectado para leer comentarios.');
+
+  const { data } = await axios.get('https://open.tiktokapis.com/v2/video/comment/list/', {
+    params: { video_id: videoId, count },
+    headers: { Authorization: `Bearer ${tokenData.access_token}` }
+  });
+  return data?.data?.comments || [];
+}
+
+async function analyzeCommentsWithAI(topic, comments) {
+  const commentsText = comments.map((c, i) => `${i + 1}. ${c.text}`).join('\n');
+  const prompt = `Analiza comentarios de TikTok para mejorar contenido futuro.
+Tema base: ${topic}
+Comentarios:\n${commentsText}
+
+Devuelve SOLO JSON válido:
+{
+  "summary": "...",
+  "sentiment": {"positive": 0, "neutral": 0, "negative": 0},
+  "contentIdeas": ["..."],
+  "insights": ["..."],
+  "recommendedHooks": ["..."]
+}`;
+
+  const response = await openai.chat.completions.create({
+    model: aiConfig.model,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.4,
+    max_tokens: 700
+  });
+
+  const raw = response.choices?.[0]?.message?.content?.trim() || '{}';
+  const parsed = maybeParseJSON(raw.replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim()) || {};
+
+  const total = comments.length || 1;
+  const sentiment = parsed.sentiment || {};
+
+  return {
+    summary: parsed.summary || 'Análisis completado.',
+    sentiment: {
+      positive: Number(sentiment.positive ?? 0),
+      neutral: Number(sentiment.neutral ?? 0),
+      negative: Number(sentiment.negative ?? 0)
+    },
+    sentimentRate: {
+      positive: Number((((sentiment.positive ?? 0) / total) * 100).toFixed(1)),
+      neutral: Number((((sentiment.neutral ?? 0) / total) * 100).toFixed(1)),
+      negative: Number((((sentiment.negative ?? 0) / total) * 100).toFixed(1))
+    },
+    contentIdeas: Array.isArray(parsed.contentIdeas) ? parsed.contentIdeas : [],
+    insights: Array.isArray(parsed.insights) ? parsed.insights : [],
+    recommendedHooks: Array.isArray(parsed.recommendedHooks) ? parsed.recommendedHooks : []
+  };
+}
+
+function saveCommentAnalytics(data) {
+  const current = readJSONSafe(ANALYTICS_FILE, { analyses: [], insights: [] });
+  current.analyses.unshift(data);
+  current.analyses = current.analyses.slice(0, 200);
+
+  const newInsights = Array.isArray(data.analysis?.insights) ? data.analysis.insights : [];
+  current.insights = [...newInsights, ...(current.insights || [])].slice(0, 100);
+
+  writeJSONSafe(ANALYTICS_FILE, current);
+}
+
+// ---------------- Automation backend ----------------
+let automationState = readJSONSafe(AUTOMATION_FILE, {
+  enabled: false,
+  intervalMinutes: 60,
+  mode: 'trending',
+  manualTopic: '',
+  autoPublish: true,
+  lastRunAt: null,
+  nextRunAt: null,
+  running: false
+});
+let automationTimer = null;
+
+function persistAutomationState() {
+  writeJSONSafe(AUTOMATION_FILE, automationState);
+}
+
+async function runAutomationCycle() {
+  if (!automationState.enabled || automationState.running) return;
+  automationState.running = true;
+  persistAutomationState();
+
+  try {
+    let topic = automationState.manualTopic || 'Tecnología';
+    let source = 'manual';
+
+    if (automationState.mode === 'trending') {
+      const trends = await detectTrendingTopics(10);
+      if (trends.length) {
+        topic = trends[0].topic;
+        source = trends[0].source;
+      }
+    }
+
+    const result = await generateVideoPipeline({ topic, source: `auto_${source}` });
+
+    if (automationState.autoPublish) {
+      const desc = `${result.scriptData.description} ${(result.scriptData.hashtags || []).join(' ')}`.slice(0, 2200);
+      await publishSessionToTikTok({ sessionId: result.sessionId, title: result.scriptData.title, description: desc });
+    }
+
+    automationState.lastRunAt = new Date().toISOString();
   } catch (err) {
-    logError('[Generate Error] ' + err.message);
+    pushLog(`[Automation] error: ${err.message}`);
+  } finally {
+    automationState.running = false;
+    automationState.nextRunAt = new Date(Date.now() + automationState.intervalMinutes * 60 * 1000).toISOString();
+    persistAutomationState();
+  }
+}
+
+function setupAutomation() {
+  if (automationTimer) clearInterval(automationTimer);
+  if (!automationState.enabled) return;
+
+  automationState.nextRunAt = new Date(Date.now() + automationState.intervalMinutes * 60 * 1000).toISOString();
+  persistAutomationState();
+
+  automationTimer = setInterval(runAutomationCycle, automationState.intervalMinutes * 60 * 1000);
+  pushLog(`[Automation] activo cada ${automationState.intervalMinutes} min`);
+}
+setupAutomation();
+
+// ---------------- Endpoints ----------------
+app.get('/health', async (req, res) => {
+  const token = await readToken();
+  const now = Math.floor(Date.now() / 1000);
+  const tokenExpiry = token?.saved_at && token?.expires_in ? token.saved_at + token.expires_in : null;
+  const tokenValid = token && (!tokenExpiry || now < tokenExpiry - 60);
+
+  res.json({
+    ok: true,
+    version: 'toktrend3-pro-v9',
+    aiModel: aiConfig.model,
+    aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1',
+    abacus: {
+      configured: Boolean(ABACUS_API_KEY),
+      imageEndpoint: Boolean(ABACUS_IMAGE_API_URL),
+      videoEndpoint: Boolean(ABACUS_VIDEO_API_URL),
+      audioEndpoint: Boolean(ABACUS_AUDIO_API_URL)
+    },
+    automation: automationState,
+    tiktokConnected: Boolean(token),
+    tokenValid,
+    tokenExpiresAt: tokenExpiry ? new Date(tokenExpiry * 1000).toISOString() : null,
+    logs: appLogs.slice(-20)
+  });
+});
+
+app.get('/api/trends', async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 15), 30);
+  const trends = await detectTrendingTopics(limit);
+  res.json({ ok: true, trends });
+});
+
+// Compatibilidad legado
+app.get('/api/generate', ensureAI, async (req, res) => {
+  try {
+    const topic = String(req.query.q || 'Historia del arte').slice(0, 200);
+    const result = await generateVideoPipeline({ topic, source: 'manual_legacy' });
+    res.json(result);
+  } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Publish video to TikTok
-app.post('/api/publish', async (req, res) => {
+// 1) Generar video manual
+app.post('/api/videos/manual', ensureAI, async (req, res) => {
   try {
-    const { sessionId, title, description } = req.body;
-    if (!sessionId) return res.status(400).json({ ok: false, error: 'Missing sessionId.' });
-    const tokenData = await getValidToken();
-    if (!tokenData?.access_token) return res.status(401).json({ ok: false, error: 'TikTok no conectado.' });
-
-    const videoPath = join(__dirname, 'public', 'videos', sessionId, 'video.mp4');
-    if (!fs.existsSync(videoPath)) return res.status(404).json({ ok: false, error: 'Video no encontrado. Genera uno nuevo.' });
-
-    const videoBuffer = fs.readFileSync(videoPath);
-    const videoSize = videoBuffer.length;
-    let chunkSize = 10 * 1024 * 1024; // 10MB chunks
-    let totalChunks = Math.floor(videoSize / chunkSize);
-    if (videoSize <= chunkSize) {
-      totalChunks = 1;
-      chunkSize = videoSize; // si cabe en 1 trozo, el tamaño debe coincidir exacto
-    }
-    console.log(`[Publish] FILE_UPLOAD ${(videoSize/1024/1024).toFixed(1)}MB en ${totalChunks} chunks`);
-
-    function shortPublishError(err) {
-      const status = err.response?.status;
-      const body = typeof err.response?.data === 'string' ? err.response.data : JSON.stringify(err.response?.data || '');
-      if (status === 504 || /504 Gateway Timeout/i.test(body)) return 'TikTok upload timeout. Reintentando subida del fragmento.';
-      if (body && body.length > 300) return body.slice(0, 300);
-      return body || err.message;
-    }
-
-    async function putChunkWithRetry(uploadUrl, chunk, rangeHeader) {
-      let lastErr;
-      for (let attempt = 1; attempt <= 4; attempt++) {
-        try {
-          await axios.put(uploadUrl, chunk, {
-            headers: {
-              'Content-Type': 'video/mp4',
-              'Content-Range': rangeHeader,
-              'Content-Length': chunk.length
-            },
-            timeout: 120000,
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity
-          });
-          return;
-        } catch (err) {
-          lastErr = err;
-          const retryable = [408, 425, 429, 500, 502, 503, 504].includes(err.response?.status) || /timeout|ECONNRESET|ETIMEDOUT/i.test(err.message);
-          console.error(`[Publish] Chunk retry ${attempt}/4: ${shortPublishError(err)}`);
-          if (!retryable || attempt === 4) break;
-          await new Promise(r => setTimeout(r, attempt * 3000));
-        }
-      }
-      throw lastErr;
-    }
-
-    async function uploadChunks(uploadUrl) {
-      for (let i = 0; i < totalChunks; i++) {
-        const start = i * chunkSize;
-        const end = i === totalChunks - 1 ? videoSize : Math.min(start + chunkSize, videoSize);
-        const chunk = videoBuffer.slice(start, end);
-        const rangeHeader = `bytes ${start}-${end - 1}/${videoSize}`;
-        console.log(`[Publish] Chunk ${i+1}/${totalChunks} ${rangeHeader}`);
-        await putChunkWithRetry(uploadUrl, chunk, rangeHeader);
-      }
-    }
-
-    const sourceInfo = {
-      source: 'FILE_UPLOAD',
-      video_size: videoSize,
-      chunk_size: chunkSize,
-      total_chunk_count: totalChunks
-    };
-
-    // Step 1: Try Direct Post first. If TikTok blocks unaudited direct posts,
-    // fall back to Inbox Upload so the creator can finish posting in TikTok.
-    const directPayload = {
-      post_info: {
-        title: (title || 'TokTrend IA').slice(0, 80),
-        description: (description || 'Soy una IA autonoma que aprende de tus comentarios #TokTrend').slice(0, 2200),
-        privacy_level: 'SELF_ONLY',
-        disable_comment: false,
-        auto_add_music: false
-      },
-      source_info: sourceInfo
-    };
-
-    let initResp;
-    let method = 'DIRECT_POST';
-    try {
-      initResp = await axios.post('https://open.tiktokapis.com/v2/post/publish/video/init/', directPayload, {
-        headers: { 'Authorization': `Bearer ${tokenData.access_token}`, 'Content-Type': 'application/json; charset=utf-8' }
-      });
-      console.log('[Publish] Direct init:', JSON.stringify(initResp.data));
-      if (initResp.data.error?.code && initResp.data.error.code !== 'ok') throw new Error(JSON.stringify(initResp.data.error));
-    } catch (directErr) {
-      const directData = directErr.response?.data || null;
-      const directCode = directData?.error?.code;
-      const directMsg = directData ? JSON.stringify(directData) : directErr.message;
-      if (directCode !== 'unaudited_client_can_only_post_to_private_accounts') throw new Error(directMsg);
-      console.log('[Publish] Direct Post bloqueado por TikTok; usando Inbox Upload.');
-      method = 'INBOX_UPLOAD';
-      initResp = await axios.post('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', { source_info: sourceInfo }, {
-        headers: { 'Authorization': `Bearer ${tokenData.access_token}`, 'Content-Type': 'application/json; charset=utf-8' }
-      });
-      console.log('[Publish] Inbox init:', JSON.stringify(initResp.data));
-      if (initResp.data.error?.code && initResp.data.error.code !== 'ok') throw new Error(JSON.stringify(initResp.data.error));
-    }
-
-    const publishId = initResp.data.data?.publish_id;
-    const uploadUrl = initResp.data.data?.upload_url;
-    if (!uploadUrl) throw new Error('No upload_url received from TikTok');
-
-    // Step 2: Upload chunks
-    await uploadChunks(uploadUrl);
-
-    console.log('[Publish] Upload completo, publishId:', publishId);
-    if (db && publishId) { try { await db.collection('published_videos').doc(publishId).set({ sessionId, title: title||'', method, publishedAt: Date.now() }); } catch {} }
-    res.json({ ok: true, publishId, method, message: method === 'INBOX_UPLOAD' ? 'Video subido a TikTok Inbox. Abre TikTok para revisar y publicar.' : 'Video publicado en TikTok.' });
-
+    const topic = String(req.body.topic || '').trim();
+    if (!topic) return res.status(400).json({ ok: false, error: 'topic es obligatorio' });
+    const result = await generateVideoPipeline({ topic: topic.slice(0, 200), source: 'manual' });
+    res.json(result);
   } catch (err) {
-    const raw = err.response?.data ? (typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data)) : err.message;
-    const msg = /504 Gateway Timeout|CloudFront/i.test(raw)
-      ? 'TikTok no respondio a tiempo durante la subida. Intenta publicar de nuevo el mismo video.'
-      : raw;
-    logError('[Publish Error] ' + msg);
-    res.status(500).json({ ok: false, error: msg });
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Reply comments
-app.post('/api/tiktok/reply-comments', requireAI, async (req, res) => {
+// 2) Generar video de trending
+app.post('/api/videos/trending', ensureAI, async (req, res) => {
+  try {
+    const trends = await detectTrendingTopics(10);
+    if (!trends.length) return res.status(503).json({ ok: false, error: 'No se pudieron detectar tendencias en este momento.' });
+    const selected = trends[0];
+    const result = await generateVideoPipeline({ topic: selected.topic, source: selected.source || 'trending' });
+    res.json({ ...result, trend: selected, trends });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 3) Configurar programación automática backend
+app.post('/api/automation/schedule', async (req, res) => {
+  const intervalMinutes = Math.max(5, Math.min(1440, Number(req.body.intervalMinutes || 60)));
+  automationState = {
+    ...automationState,
+    enabled: Boolean(req.body.enabled),
+    intervalMinutes,
+    mode: req.body.mode === 'manual' ? 'manual' : 'trending',
+    manualTopic: String(req.body.manualTopic || '').slice(0, 200),
+    autoPublish: req.body.autoPublish !== false
+  };
+  persistAutomationState();
+  setupAutomation();
+  res.json({ ok: true, automation: automationState });
+});
+
+app.get('/api/automation/status', async (req, res) => {
+  res.json({ ok: true, automation: automationState });
+});
+
+// 4) Historial y análisis comentarios
+app.get('/api/history', async (req, res) => {
+  try {
+    if (db) {
+      const snap = await db.collection('generated_videos').orderBy('createdAt', 'desc').limit(50).get();
+      const items = snap.docs.map((d) => d.data());
+      return res.json({ ok: true, items });
+    }
+  } catch {}
+  const items = readJSONSafe(join(STORAGE_DIR, 'generated_videos.json'), []);
+  res.json({ ok: true, items: items.slice(0, 50) });
+});
+
+app.post('/api/analytics/comments/analyze', ensureAI, async (req, res) => {
+  try {
+    const { videoId, topic } = req.body;
+    if (!videoId) return res.status(400).json({ ok: false, error: 'videoId es obligatorio' });
+
+    const comments = await fetchTikTokComments(videoId, 60);
+    if (!comments.length) return res.json({ ok: true, comments: 0, analysis: null, message: 'No hay comentarios para analizar.' });
+
+    const analysis = await analyzeCommentsWithAI(topic || 'tema general', comments);
+    const record = {
+      id: crypto.randomBytes(6).toString('hex'),
+      videoId,
+      topic: topic || null,
+      commentsCount: comments.length,
+      analyzedAt: new Date().toISOString(),
+      analysis,
+      sampleComments: comments.slice(0, 8).map((c) => c.text)
+    };
+
+    saveCommentAnalytics(record);
+    if (db) {
+      try { await db.collection('comment_analytics').doc(record.id).set(record); } catch {}
+    }
+
+    res.json({ ok: true, ...record });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/api/analytics/comments', async (req, res) => {
+  try {
+    if (db) {
+      const snap = await db.collection('comment_analytics').orderBy('analyzedAt', 'desc').limit(30).get();
+      const analyses = snap.docs.map((d) => d.data());
+      return res.json({ ok: true, analyses });
+    }
+  } catch {}
+  const local = readJSONSafe(ANALYTICS_FILE, { analyses: [] });
+  res.json({ ok: true, analyses: (local.analyses || []).slice(0, 30) });
+});
+
+app.post('/api/publish', async (req, res) => {
+  try {
+    const { sessionId, title, description } = req.body;
+    if (!sessionId) return res.status(400).json({ ok: false, error: 'Missing sessionId' });
+    const published = await publishSessionToTikTok({ sessionId, title, description });
+    res.json({ ok: true, ...published });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/tiktok/reply-comments', ensureAI, async (req, res) => {
   try {
     const { videoId } = req.body;
-    if (!videoId) return res.status(400).json({ ok: false, error: 'Missing videoId.' });
+    if (!videoId) return res.status(400).json({ ok: false, error: 'Missing videoId' });
+    const comments = await fetchTikTokComments(videoId, 20);
+    if (!comments.length) return res.json({ ok: true, replied: 0, message: 'Sin comentarios.' });
+
     const tokenData = await getValidToken();
     if (!tokenData?.access_token) return res.status(401).json({ ok: false, error: 'TikTok no conectado.' });
 
-    const commentsRes = await axios.get('https://open.tiktokapis.com/v2/video/comment/list/', {
-      params: { video_id: videoId, count: 20 }, headers: { 'Authorization': `Bearer ${tokenData.access_token}` }
-    });
-    const comments = commentsRes.data?.data?.comments || [];
-    if (!comments.length) return res.json({ ok: true, replied: 0, message: 'Sin comentarios.' });
-
-    let alreadyReplied = new Set();
-    if (db) { try { const snap = await db.collection('replied_comments').where('videoId','==',videoId).get(); snap.docs.forEach(d => alreadyReplied.add(d.id)); } catch {} }
-
-    const pending = comments.filter(c => !alreadyReplied.has(c.id) && c.text?.trim());
-    if (!pending.length) return res.json({ ok: true, replied: 0, message: 'Todos respondidos.' });
-
     let replied = 0;
-    for (const comment of pending.slice(0, 5)) {
-      try {
-        const aiRes = await openai.chat.completions.create({ model: aiConfig.model, messages: [{ role: 'user', content: `Eres una IA autonoma y carinosa en TikTok. Responde dulce, breve y personal (max 150 chars): "${comment.text}". Solo la respuesta.` }], max_tokens: 80, temperature: 0.9 });
-        const replyText = (aiRes.choices[0]?.message?.content?.trim() || '¡Gracias! Aprendo de ti.').slice(0, 150);
-        await axios.post('https://open.tiktokapis.com/v2/video/comment/reply/', { video_id: videoId, parent_comment_id: comment.id, text: replyText }, { headers: { 'Authorization': `Bearer ${tokenData.access_token}`, 'Content-Type': 'application/json' } });
-        if (db) { try { await db.collection('replied_comments').doc(comment.id).set({ videoId, repliedAt: Date.now() }); } catch {} }
-        replied++;
-        await new Promise(r => setTimeout(r, 1500));
-      } catch {}
+    for (const comment of comments.slice(0, 8)) {
+      const aiRes = await openai.chat.completions.create({
+        model: aiConfig.model,
+        messages: [{ role: 'user', content: `Responde en español en máximo 150 caracteres de forma natural y cálida a este comentario: "${comment.text}"` }],
+        max_tokens: 80,
+        temperature: 0.9
+      });
+      const replyText = (aiRes.choices?.[0]?.message?.content || 'Gracias por comentar.').trim().slice(0, 150);
+
+      await axios.post('https://open.tiktokapis.com/v2/video/comment/reply/', {
+        video_id: videoId,
+        parent_comment_id: comment.id,
+        text: replyText
+      }, {
+        headers: { Authorization: `Bearer ${tokenData.access_token}`, 'Content-Type': 'application/json' }
+      });
+      replied += 1;
+      await new Promise((r) => setTimeout(r, 1300));
     }
-    res.json({ ok: true, replied, total: pending.length });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+
+    res.json({ ok: true, replied, total: comments.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
-// TikTok OAuth
+app.post('/api/tiktok/disconnect', async (req, res) => {
+  await deleteToken();
+  res.json({ ok: true });
+});
+
 app.get('/api/tiktok/login', async (req, res) => {
   const clientKey = process.env.TIKTOK_CLIENT_KEY;
   if (!clientKey) return res.status(500).send('Missing TIKTOK_CLIENT_KEY');
   const state = crypto.randomBytes(8).toString('hex');
   const { verifier, challenge } = generatePKCE();
   storeVerifier(state, verifier);
-  // Direct Post usa video.publish; Inbox Upload usa video.upload.
-  // No pedimos permisos de comentarios porque requieren productos aprobados aparte.
+
   const scope = 'user.info.basic,video.publish,video.upload';
   res.redirect(`https://www.tiktok.com/v2/auth/authorize?client_key=${clientKey}&response_type=code&scope=${encodeURIComponent(scope)}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}&code_challenge=${challenge}&code_challenge_method=S256`);
 });
@@ -674,15 +1037,27 @@ async function handleTikTokOAuthCallback(req, res) {
   if (!code) return res.status(400).send('No code');
   const verifier = getVerifier(state);
   if (!verifier) return res.status(400).send('<h1>Estado inválido.</h1>');
-  try {
-    const params = new URLSearchParams({ client_key: process.env.TIKTOK_CLIENT_KEY, client_secret: process.env.TIKTOK_CLIENT_SECRET, code, grant_type: 'authorization_code', redirect_uri: REDIRECT_URI, code_verifier: verifier });
-    const { data } = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', params.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cache-Control': 'no-cache' } });
-    if (data.error) throw new Error(data.error_description || data.error);
-    await writeToken(data);
-    res.send(`<div style="font-family:sans-serif;text-align:center;padding:50px"><h1 style="color:#10b981">✅ TikTok Conectado</h1><script>setTimeout(()=>window.close(),2500)</script></div>`);
-  } catch (err) { res.status(500).send(`<h1>Error conectando a TikTok</h1><pre>${err.response ? JSON.stringify(err.response.data, null, 2) : err.message}</pre><p>Revisa TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET y que el Redirect URI en TikTok coincida exactamente con: <b>${REDIRECT_URI}</b></p>`); }
-}
 
+  try {
+    const params = new URLSearchParams({
+      client_key: process.env.TIKTOK_CLIENT_KEY,
+      client_secret: process.env.TIKTOK_CLIENT_SECRET,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: REDIRECT_URI,
+      code_verifier: verifier
+    });
+    const { data } = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', params.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cache-Control': 'no-cache' }
+    });
+    if (data.error) throw new Error(data.error_description || data.error);
+
+    await writeToken(data);
+    res.send('<div style="font-family:sans-serif;text-align:center;padding:50px"><h1 style="color:#10b981">✅ TikTok Conectado</h1><script>setTimeout(()=>window.close(),2500)</script></div>');
+  } catch (err) {
+    res.status(500).send(`<h1>Error conectando a TikTok</h1><pre>${err.response ? JSON.stringify(err.response.data, null, 2) : err.message}</pre><p>Revisa TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET y Redirect URI: <b>${REDIRECT_URI}</b></p>`);
+  }
+}
 app.get('/api/tiktok/oauth/callback', handleTikTokOAuthCallback);
 app.get('/api/tiktok/callback', handleTikTokOAuthCallback);
 
@@ -697,4 +1072,4 @@ app.all('/api/tiktok/webhook', (req, res) => {
 });
 
 app.use((req, res) => res.status(404).json({ ok: false, error: 'Not found.' }));
-app.listen(port, () => console.log(`TokTrend on :${port}`));
+app.listen(port, () => console.log(`TokTrend Pro on :${port}`));

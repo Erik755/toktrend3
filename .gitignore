@@ -4,3 +4,5 @@ node_modules
 npm-debug.log
 *.mp4
 tiktok_token.json
+storage/
+.abacus.donotdelete

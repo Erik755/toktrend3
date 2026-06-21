@@ -124,7 +124,7 @@ textarea:focus{border-color:var(--cyan)}
           <div class="switch" id="sw" onclick="toggleAuto()"></div>
         </div>
       </div>
-      <p class="sub">Publica en el intervalo elegido sobre el tema indicado.</p>
+      <p class="sub">Automatización backend: genera y publica sin depender del navegador cliente.</p>
       <div class="label">TEMA DEL CONTENIDO AUTÓNOMO</div>
       <textarea id="autoTopic" placeholder="Ej: Historia del universo, Física cuántica, Arte renacentista, Filosofía estoica…"></textarea>
       <div class="label" style="margin-top:10px">INTERVALO DE PUBLICACIÓN</div>
@@ -212,91 +212,108 @@ const $$ = s => [...document.querySelectorAll(s)];
 
 let session = null, slides = [], script = null, slideInt = null, slideIdx = 0;
 let playing = false, lastPubId = null, vidCount = 0;
-let autoOn = false, autoCD = null, autoRem = 0, autoTot = 0;
+let autoOn = false;
 
-// ── TikTok ────────────────────────────────────────────────────────────────────
-function connectTT() { window.open('/api/tiktok/login','_blank','width=500,height=600'); setTimeout(checkHealth,4000); }
+function connectTT() { window.open('/api/tiktok/login','_blank','width=500,height=600'); setTimeout(checkHealth,3500); }
 async function disconnectTT() {
   if(!confirm('¿Desconectar TikTok?')) return;
   await fetch(`${B}/api/tiktok/disconnect`,{method:'POST'});
-  $('#ttBtn').textContent='🎵 Conectar TikTok'; $('#ttBtn').className='hbtn tt-c'; $('#ttBtn').onclick=connectTT;
-  $('#ttDis').classList.add('hidden');
+  await checkHealth();
 }
 
-// ── Health ────────────────────────────────────────────────────────────────────
 async function checkHealth() {
   try {
     const d = await (await fetch(`${B}/health`)).json();
     $('#hPill').textContent = d.ok ? '● Online' : '✗ Error';
     $('#hPill').className = 'pill ' + (d.ok ? 'ok' : 'err');
+
     const td = await (await fetch(`${B}/api/tiktok/status`)).json();
     if (td.connected) {
       $('#ttBtn').textContent='✅ TikTok'; $('#ttBtn').className='hbtn tt-c on'; $('#ttBtn').onclick=null;
       $('#ttDis').classList.remove('hidden');
+    } else {
+      $('#ttBtn').textContent='🎵 Conectar TikTok'; $('#ttBtn').className='hbtn tt-c'; $('#ttBtn').onclick=connectTT;
+      $('#ttDis').classList.add('hidden');
     }
-  } catch { $('#hPill').textContent='✗ Offline'; $('#hPill').className='pill err'; }
+    await loadAutomationStatus();
+    await loadTrends();
+  } catch {
+    $('#hPill').textContent='✗ Offline'; $('#hPill').className='pill err';
+  }
 }
 
-// ── Agent status ──────────────────────────────────────────────────────────────
 function setAgent(txt, pct=null) {
   $('#agentBar').textContent = txt;
-  if (pct !== null) { $('#genBar').style.width = pct+'%'; }
+  if (pct !== null) $('#genBar').style.width = pct+'%';
 }
 
-// ── Autonomous ────────────────────────────────────────────────────────────────
-function toggleAuto() {
-  autoOn = !autoOn;
-  $('#sw').classList.toggle('on', autoOn);
-  $('#swLbl').textContent = autoOn ? 'ON' : 'OFF';
-  $('#swLbl').classList.toggle('on', autoOn);
-  if (autoOn) {
-    const t = $('#autoTopic').value.trim();
-    if (!t) { alert('Escribe un tema para el modo autónomo.'); autoOn=false; $('#sw').classList.remove('on'); $('#swLbl').textContent='OFF'; $('#swLbl').classList.remove('on'); return; }
-    startCD(); setAgent('Modo autónomo ON');
-  } else { stopCD(); setAgent('Modo autónomo OFF.'); }
+async function loadTrends(){
+  try{
+    const r=await fetch(`${B}/api/trends?limit=5`);
+    const d=await r.json();
+    if(!d.ok||!Array.isArray(d.trends)) return;
+    const items=d.trends.slice(0,5).map(t=>`<div class="trend"><div><strong>${t.topic}</strong><span>${t.source||'trend'}</span></div><div class="score">${Math.min(99,Math.round((t.score||0)%100))}</div></div>`).join('');
+    const trendsCard=[...document.querySelectorAll('.card')].find(c=>c.querySelector('h2')?.textContent?.trim()==='Tendencias');
+    if(trendsCard) trendsCard.innerHTML='<h2>Tendencias en tiempo real</h2>'+items;
+  }catch{}
 }
+
+async function loadAutomationStatus(){
+  try{
+    const r=await fetch(`${B}/api/automation/status`);
+    const d=await r.json();
+    if(!d.ok) return;
+    const a=d.automation||{};
+    autoOn=!!a.enabled;
+    $('#sw').classList.toggle('on',autoOn);
+    $('#swLbl').textContent=autoOn?'ON':'OFF';
+    $('#swLbl').classList.toggle('on',autoOn);
+    if(a.intervalMinutes){
+      $$('#intervals .iBtn').forEach(x=>x.classList.remove('active'));
+      const btn=[...$$('#intervals .iBtn')].find(b=>Number(b.dataset.min)===Number(a.intervalMinutes));
+      if(btn) btn.classList.add('active');
+    }
+    if(a.manualTopic) $('#autoTopic').value=a.manualTopic;
+    $('#timerSub').textContent = a.nextRunAt ? `Próxima ejecución backend: ${new Date(a.nextRunAt).toLocaleString()}` : 'Activa para iniciar';
+  }catch{}
+}
+
 function getMin() { return parseInt($('#intervals .iBtn.active')?.dataset.min||'60'); }
-function startCD() {
-  stopCD();
-  autoTot = getMin()*60; autoRem = autoTot;
-  tick();
-  autoCD = setInterval(tick, 1000);
+
+async function saveAutomationState(enabled){
+  const payload={
+    enabled,
+    intervalMinutes:getMin(),
+    mode:$('#autoTopic').value.trim() ? 'manual' : 'trending',
+    manualTopic:$('#autoTopic').value.trim(),
+    autoPublish:true
+  };
+  const r=await fetch(`${B}/api/automation/schedule`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const d=await r.json();
+  if(!d.ok) throw new Error(d.error||'No se pudo guardar automatización');
+  autoOn=enabled;
+  setAgent(enabled ? 'Modo autónomo backend ACTIVADO' : 'Modo autónomo backend DESACTIVADO');
+  await loadAutomationStatus();
 }
-function stopCD() {
-  clearInterval(autoCD); autoCD=null;
-  $('#timerDisp').textContent='--:--'; $('#timerSub').textContent='Activa para iniciar'; $('#timerBar').style.width='0%';
+
+async function toggleAuto() {
+  try { await saveAutomationState(!autoOn); }
+  catch(e){ alert(e.message); }
 }
-function tick() {
-  autoRem = Math.max(0, autoRem-1);
-  $('#timerDisp').textContent = fmt(autoRem);
-  $('#timerBar').style.width = Math.min(100,((autoTot-autoRem)/autoTot)*100)+'%';
-  $('#timerSub').textContent = `Próxima publicación en ${fmt(autoRem)}`;
-  if (autoRem === 0) { doAutoPub(); autoRem = autoTot; }
-}
-function fmt(s) {
-  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;
-  return h>0?`${h}:${pad(m)}:${pad(ss)}`:`${pad(m)}:${pad(ss)}`;
-}
-function pad(n) { return String(n).padStart(2,'0'); }
-async function doAutoPub() {
-  const t = $('#autoTopic').value.trim() || 'Historia del arte';
-  setAgent('Publicación automática…');
-  try { await runGenerate(t, true); setAgent('Publicación automática completada ✓'); }
-  catch(e) { setAgent('Error auto: '+e.message); }
-}
-$$('#intervals .iBtn').forEach(b => b.onclick = () => {
+
+$$('#intervals .iBtn').forEach(b => b.onclick = async () => {
   $$('#intervals .iBtn').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
-  if (autoOn) startCD();
+  if (autoOn) await saveAutomationState(true);
 });
 
-// ── Slideshow ─────────────────────────────────────────────────────────────────
 function startSlides() {
   if (slideInt) clearInterval(slideInt);
   if (!slides.length) return;
   slideIdx=0; showSlide();
   slideInt = setInterval(()=>{ slideIdx=(slideIdx+1)%slides.length; showSlide(); }, 4000);
 }
+
 function showSlide() {
   const s=slides[slideIdx]; if(!s) return;
   $('#art').style.backgroundImage=`url('${s.url}')`;
@@ -305,7 +322,6 @@ function showSlide() {
   $('#vcap').textContent=s.description;
 }
 
-// ── Script panel ──────────────────────────────────────────────────────────────
 function showScript(sd) {
   $('#scriptCard').classList.remove('is-placeholder');
   $('#sTitle').textContent = sd.title||'—';
@@ -318,12 +334,11 @@ function showScript(sd) {
   $('#vmeta').textContent = (sd.hashtags||[]).slice(0,4).join(' ');
 }
 
-// ── Generate ──────────────────────────────────────────────────────────────────
 async function runGenerate(topic, autoPub=false) {
   $('#gen').disabled=true; $('#gen').innerHTML='<span class="spin"></span>Generando…';
-  setAgent('Generando guión…', 10);
+  setAgent('Generando contenido cinematográfico…', 15);
   try {
-    const r = await fetch(`${B}/api/generate?q=${encodeURIComponent(topic)}`);
+    const r = await fetch(`${B}/api/videos/manual`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic})});
     const d = await r.json();
     if (!d.ok) throw new Error(d.error||'Error');
     session=d.sessionId; slides=d.slides||[]; script=d.scriptData;
@@ -337,9 +352,27 @@ async function runGenerate(topic, autoPub=false) {
     $('#gen').disabled=false; $('#gen').textContent='🎬 Generar Video';
   }
 }
-$('#gen').onclick = () => { const t=$('#topic').value.trim()||'Historia del arte'; runGenerate(t,false); };
 
-// ── Publish ───────────────────────────────────────────────────────────────────
+async function runTrendingGenerate(){
+  $('#gen').disabled=true; $('#gen').innerHTML='<span class="spin"></span>Tendencia…';
+  try{
+    const r=await fetch(`${B}/api/videos/trending`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d=await r.json();
+    if(!d.ok) throw new Error(d.error||'Error');
+    session=d.sessionId; slides=d.slides||[]; script=d.scriptData;
+    showScript(d.scriptData); startSlides();
+    $('#topic').value=d.topic||'';
+    setAgent(`Video trend generado: ${d.topic}`);
+  }catch(e){ alert(e.message); setAgent('Error trend: '+e.message); }
+  finally{ $('#gen').disabled=false; $('#gen').textContent='🎬 Generar Video'; }
+}
+
+$('#gen').onclick = () => {
+  const t=$('#topic').value.trim();
+  if(!t) return runTrendingGenerate();
+  return runGenerate(t,false);
+};
+
 async function doPub(sd) {
   if (!session) { alert('Primero genera un video.'); return; }
   $('#btnPub').disabled=true; $('#btnPub').textContent='⏳ Publicando…';
@@ -352,33 +385,29 @@ async function doPub(sd) {
     if (!d.ok) throw new Error(d.error);
     lastPubId=d.publishId||null;
     setAgent('¡Publicado! ✓', 100);
-    alert(`✅ Publicado en TikTok!\nID: ${d.publishId||'ok'}`);
-    if(slideInt) clearInterval(slideInt);
-    $('#art').style.backgroundImage=''; $('#vtitle').textContent='TokTrend AI'; $('#vcap').textContent='Tu IA autónoma ✨';
-    session=null;
-  } catch(e) { setAgent('Error: '+e.message,0); alert('Error: '+e.message); }
-  finally { $('#btnPub').disabled=false; $('#btnPub').textContent='🚀 Publicar en TikTok'; }
+    alert(`✅ ${d.message||'Publicado'}
+ID: ${d.publishId||'ok'}`);
+  } catch(e) {
+    setAgent('Error: '+e.message,0);
+    alert('Error: '+e.message);
+  } finally {
+    $('#btnPub').disabled=false; $('#btnPub').textContent='🚀 Publicar en TikTok';
+  }
 }
 $('#btnPub').onclick = () => doPub(script);
 
-// ── Voice ─────────────────────────────────────────────────────────────────────
 function speak(text) {
   speechSynthesis.cancel();
   const u=new SpeechSynthesisUtterance(text);
-  u.lang='es-ES'; u.rate=0.91; u.pitch=1.18; u.volume=1;
-  const vv=speechSynthesis.getVoices();
-  const sv=vv.find(v=>v.lang.startsWith('es')&&/female|Monica|Paulina|Esperanza|Lucia|Elena|mujer/i.test(v.name))||vv.find(v=>v.lang.startsWith('es'));
-  if(sv) u.voice=sv;
+  u.lang='es-ES'; u.rate=0.92; u.pitch=1.08; u.volume=1;
   u.onend=()=>{ playing=false; $('#btnPlay').classList.remove('act'); $('#btnPlay').textContent='▶ Narrador'; };
   speechSynthesis.speak(u);
   playing=true; $('#btnPlay').classList.add('act'); $('#btnPlay').textContent='⏸ Pausar';
 }
 $('#btnPlay').onclick=()=>{ if(playing){ speechSynthesis.cancel(); playing=false; $('#btnPlay').classList.remove('act'); $('#btnPlay').textContent='▶ Narrador'; } else { speak(script?.script||$('#vtitle').textContent); } };
 
-// ── Scene ─────────────────────────────────────────────────────────────────────
 $('#btnScene').onclick=()=>{ if(slides.length){ slideIdx=(slideIdx+1)%slides.length; showSlide(); $('#btnScene').classList.add('act'); setTimeout(()=>$('#btnScene').classList.remove('act'),350); } };
 
-// ── Reply ─────────────────────────────────────────────────────────────────────
 $('#btnReply').onclick=async()=>{
   if(!lastPubId){ alert('Publica un video primero.'); return; }
   $('#btnReply').disabled=true; $('#btnReply').classList.add('act'); $('#btnReply').textContent='⏳…';
@@ -387,12 +416,17 @@ $('#btnReply').onclick=async()=>{
     const r=await fetch(`${B}/api/tiktok/reply-comments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({videoId:lastPubId})});
     const d=await r.json();
     if(d.ok) setAgent(`Respondidos ${d.replied} comentarios ✓`); else throw new Error(d.error);
+
+    const a=await fetch(`${B}/api/analytics/comments/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({videoId:lastPubId,topic:$('#topic').value||'general'})});
+    const ad=await a.json();
+    if(ad.ok && ad.analysis?.summary) setAgent('Aprendizaje actualizado: '+ad.analysis.summary);
   } catch(e){ setAgent('Error: '+e.message); }
   finally{ $('#btnReply').disabled=false; $('#btnReply').classList.remove('act'); $('#btnReply').textContent='💬 Responder'; }
 };
 
 checkHealth();
 speechSynthesis.onvoiceschanged=()=>speechSynthesis.getVoices();
+setInterval(loadAutomationStatus, 20000);
 </script>
 </body>
 </html>
