@@ -1416,7 +1416,7 @@ app.get('/health', async (req, res) => {
   res.json({
     ok: true,
     version: 'toktrend3-pro-v11-ai-images',
-    buildMarker: 'ai-image-generation',
+    buildMarker: 'ai-image-seq-backoff',
     aiModel: aiConfig.model,
     aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1',
     abacus: {
