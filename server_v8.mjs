@@ -114,6 +114,14 @@ const ABACUS_IMAGE_API_URL = process.env.ABACUS_IMAGE_API_URL || '';
 const ABACUS_VIDEO_API_URL = process.env.ABACUS_VIDEO_API_URL || '';
 const ABACUS_AUDIO_API_URL = process.env.ABACUS_AUDIO_API_URL || '';
 
+// ---------------- Stock media (clips/imágenes reales) ----------------
+// Pexels y Pixabay ofrecen API gratuita (solo requiere registrarse y pedir una key).
+// Si se configuran, la app usa CLIPS DE VIDEO CINEMATOGRÁFICOS REALES.
+// Sin ninguna key, usa imágenes reales de Openverse/Wikimedia (sin key) con movimiento Ken Burns.
+const PEXELS_API_KEY = process.env.PEXELS_API_KEY || '';
+const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || '';
+const STOCK_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36';
+
 const STORAGE_DIR = join(__dirname, 'storage');
 const ANALYTICS_FILE = join(STORAGE_DIR, 'comment_analytics.json');
 const AUTOMATION_FILE = join(STORAGE_DIR, 'automation_config.json');
@@ -490,24 +498,252 @@ Formato exacto:
   return normalizeScriptData(parsed, topic);
 }
 
-async function fetchFallbackImage(query, outputPath, idx = 0) {
-  const colors = ['0xf97316', '0x14b8a6', '0x2563eb', '0xdb2777', '0x84cc16', '0x8b5cf6', '0x22d3ee'];
+// Descarga una imagen desde una URL y la guarda; valida que sea una imagen real (>3KB)
+async function downloadImageTo(url, outputPath) {
   try {
-    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query + ' filetype:bitmap')}&gsrnamespace=6&prop=imageinfo&iiprop=url|mime&iiurlwidth=1080&format=json&gsrlimit=8`;
-    const { data } = await axios.get(url, { timeout: 12000 });
-    const pages = Object.values(data?.query?.pages || {});
-    const candidate = pages.map((p) => p?.imageinfo?.[0]).find((img) => img?.thumburl);
-    if (candidate?.thumburl) {
-      const imgResp = await axios.get(candidate.thumburl, { responseType: 'arraybuffer', timeout: 15000 });
-      fs.writeFileSync(outputPath, Buffer.from(imgResp.data));
-      return true;
-    }
-  } catch {}
+    const resp = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 20000,
+      headers: { 'User-Agent': STOCK_UA, 'Accept': 'image/*' },
+      maxContentLength: 25 * 1024 * 1024
+    });
+    const buf = Buffer.from(resp.data);
+    if (buf.length < 3000) return false; // demasiado pequeña: probablemente error/placeholder
+    fs.writeFileSync(outputPath, buf);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-  // Resolución reducida para ahorrar memoria (720x1280 en vez de 1080x1920)
-  await execAsync(`"${ffmpegPath.path}" -f lavfi -i "color=c=${colors[idx % colors.length]}:s=720x1280" -frames:v 1 -y "${outputPath}"`);
+// 1) Pexels (foto). Requiere PEXELS_API_KEY (gratis). Imágenes profesionales y cinematográficas.
+async function fetchPexelsPhoto(query, outputPath) {
+  if (!PEXELS_API_KEY) return false;
+  try {
+    const { data } = await axios.get('https://api.pexels.com/v1/search', {
+      params: { query, orientation: 'portrait', per_page: 8, size: 'medium' },
+      headers: { Authorization: PEXELS_API_KEY },
+      timeout: 15000
+    });
+    const photos = data?.photos || [];
+    for (const ph of photos) {
+      const src = ph?.src?.portrait || ph?.src?.large2x || ph?.src?.large || ph?.src?.original;
+      if (src && await downloadImageTo(src, outputPath)) return true;
+    }
+  } catch (err) {
+    pushLog(`[Pexels photo] ${err.response?.status || ''} ${err.message}`);
+  }
+  return false;
+}
+
+// 2) Pixabay (foto). Requiere PIXABAY_API_KEY (gratis).
+async function fetchPixabayPhoto(query, outputPath) {
+  if (!PIXABAY_API_KEY) return false;
+  try {
+    const { data } = await axios.get('https://pixabay.com/api/', {
+      params: { key: PIXABAY_API_KEY, q: query, image_type: 'photo', orientation: 'vertical', per_page: 8, safesearch: true },
+      timeout: 15000
+    });
+    const hits = data?.hits || [];
+    for (const h of hits) {
+      const src = h?.largeImageURL || h?.webformatURL;
+      if (src && await downloadImageTo(src, outputPath)) return true;
+    }
+  } catch (err) {
+    pushLog(`[Pixabay photo] ${err.response?.status || ''} ${err.message}`);
+  }
+  return false;
+}
+
+// 3) Openverse (sin key): >700M imágenes CC. Relevancia alta.
+async function fetchOpenversePhoto(query, outputPath) {
+  try {
+    const { data } = await axios.get('https://api.openverse.org/v1/images/', {
+      params: { q: query, page_size: 8, license_type: 'commercial', mature: false },
+      headers: { 'User-Agent': 'toktrend/1.0 (+https://toktrend3.onrender.com)' },
+      timeout: 15000
+    });
+    const results = data?.results || [];
+    for (const r of results) {
+      const src = r?.url || r?.thumbnail;
+      if (src && await downloadImageTo(src, outputPath)) return true;
+    }
+  } catch (err) {
+    pushLog(`[Openverse] ${err.response?.status || ''} ${err.message}`);
+  }
+  return false;
+}
+
+// 4) Wikimedia Commons (sin key): filtrado a imágenes reales (jpeg/png/webp).
+async function fetchWikimediaPhoto(query, outputPath) {
+  try {
+    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&prop=imageinfo&iiprop=url|mime&iiurlwidth=720&format=json&gsrlimit=12`;
+    const { data } = await axios.get(url, { timeout: 12000, headers: { 'User-Agent': 'toktrend/1.0 (+https://toktrend3.onrender.com)' } });
+    const pages = Object.values(data?.query?.pages || {});
+    const candidates = pages
+      .map((p) => p?.imageinfo?.[0])
+      .filter((img) => img?.thumburl && /image\/(jpeg|png|webp)/i.test(img?.mime || ''));
+    for (const c of candidates) {
+      if (await downloadImageTo(c.thumburl, outputPath)) return true;
+    }
+  } catch (err) {
+    pushLog(`[Wikimedia] ${err.message}`);
+  }
+  return false;
+}
+
+// 5) Último recurso: gradiente atractivo (NO color plano) generado con FFmpeg.
+async function makeGradientBackground(outputPath, idx = 0) {
+  const palettes = [
+    ['0x0f172a', '0x2563eb'], ['0x1e1b4b', '0x7c3aed'], ['0x064e3b', '0x14b8a6'],
+    ['0x451a03', '0xf97316'], ['0x500724', '0xdb2777'], ['0x0c4a6e', '0x22d3ee']
+  ];
+  const [c0, c1] = palettes[idx % palettes.length];
+  // gradiente diagonal suave 720x1280
+  const cmd = `"${ffmpegPath.path}" -f lavfi -i "gradients=s=720x1280:c0=${c0}:c1=${c1}:x0=0:y0=0:x1=720:y1=1280" -frames:v 1 -y "${outputPath}"`;
+  try {
+    await execAsync(cmd);
+  } catch {
+    // si el filtro gradients no está disponible, usar color sólido como respaldo final
+    await execAsync(`"${ffmpegPath.path}" -f lavfi -i "color=c=${c1}:s=720x1280" -frames:v 1 -y "${outputPath}"`);
+  }
   registerTempFile(outputPath);
   return true;
+}
+
+// Obtiene UNA imagen real intentando todas las fuentes en orden de calidad.
+async function fetchFallbackImage(query, outputPath, idx = 0) {
+  if (await fetchPexelsPhoto(query, outputPath)) return true;
+  if (await fetchPixabayPhoto(query, outputPath)) return true;
+  if (await fetchOpenversePhoto(query, outputPath)) return true;
+  if (await fetchWikimediaPhoto(query, outputPath)) return true;
+  await makeGradientBackground(outputPath, idx);
+  return true;
+}
+
+// ---------------- Clips de video stock REALES (cinematográficos) ----------------
+async function downloadFileTo(url, outputPath, minBytes = 20000) {
+  try {
+    const resp = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: { 'User-Agent': STOCK_UA },
+      maxContentLength: 80 * 1024 * 1024
+    });
+    const buf = Buffer.from(resp.data);
+    if (buf.length < minBytes) return false;
+    fs.writeFileSync(outputPath, buf);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Pexels video: elige un archivo vertical/HD ligero (<=1280px) para ahorrar memoria.
+function pickPexelsVideoFile(videoFiles = []) {
+  const portrait = videoFiles.filter((f) => f.width && f.height && f.height >= f.width);
+  const pool = portrait.length ? portrait : videoFiles;
+  // preferir el más cercano a 720px de ancho para 720x1280
+  const sorted = pool
+    .filter((f) => f.link && /mp4/i.test(f.file_type || 'mp4'))
+    .sort((a, b) => Math.abs((a.width || 720) - 720) - Math.abs((b.width || 720) - 720));
+  return sorted[0]?.link || null;
+}
+
+async function fetchPexelsVideos(queries, outputDir, count) {
+  if (!PEXELS_API_KEY) return [];
+  const clips = [];
+  for (let i = 0; i < queries.length && clips.length < count; i++) {
+    const query = queries[i];
+    try {
+      const { data } = await axios.get('https://api.pexels.com/videos/search', {
+        params: { query, orientation: 'portrait', per_page: 5, size: 'medium' },
+        headers: { Authorization: PEXELS_API_KEY },
+        timeout: 15000
+      });
+      const videos = data?.videos || [];
+      for (const v of videos) {
+        const link = pickPexelsVideoFile(v.video_files);
+        if (!link) continue;
+        const outPath = join(outputDir, `clip_${clips.length}.mp4`);
+        if (await downloadFileTo(link, outPath)) {
+          clips.push(outPath);
+          registerTempFile(outPath);
+          break;
+        }
+      }
+    } catch (err) {
+      pushLog(`[Pexels video] ${err.response?.status || ''} ${err.message}`);
+    }
+  }
+  return clips;
+}
+
+async function fetchPixabayVideos(queries, outputDir, count) {
+  if (!PIXABAY_API_KEY) return [];
+  const clips = [];
+  for (let i = 0; i < queries.length && clips.length < count; i++) {
+    const query = queries[i];
+    try {
+      const { data } = await axios.get('https://pixabay.com/api/videos/', {
+        params: { key: PIXABAY_API_KEY, q: query, per_page: 5, safesearch: true },
+        timeout: 15000
+      });
+      const hits = data?.hits || [];
+      for (const h of hits) {
+        const v = h?.videos || {};
+        const link = v.medium?.url || v.small?.url || v.large?.url || v.tiny?.url;
+        if (!link) continue;
+        const outPath = join(outputDir, `clip_${clips.length}.mp4`);
+        if (await downloadFileTo(link, outPath)) {
+          clips.push(outPath);
+          registerTempFile(outPath);
+          break;
+        }
+      }
+    } catch (err) {
+      pushLog(`[Pixabay video] ${err.response?.status || ''} ${err.message}`);
+    }
+  }
+  return clips;
+}
+
+// Intenta obtener clips de video reales (solo si hay key de Pexels/Pixabay).
+async function fetchStockVideoClips(queries, outputDir, count = 5) {
+  fs.mkdirSync(outputDir, { recursive: true });
+  let clips = await fetchPexelsVideos(queries, outputDir, count);
+  if (clips.length < Math.min(3, count)) {
+    const more = await fetchPixabayVideos(queries, outputDir, count - clips.length);
+    clips = clips.concat(more);
+  }
+  return clips;
+}
+
+// Compone un video cinematográfico a partir de CLIPS de video reales + narración.
+// Cada clip se recorta a una duración uniforme, se escala/recorta a 720x1280 y se concatena.
+async function buildVideoFromClips(clips, audioPath, outputPath, totalSeconds) {
+  const perClip = Math.max(2.5, totalSeconds / clips.length);
+  const inputs = clips.map((c) => `-stream_loop -1 -t ${perClip.toFixed(2)} -i "${c}"`).join(' ');
+
+  const filters = clips.map((_, i) =>
+    `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,format=yuv420p[v${i}]`
+  ).join(';');
+  const concatChain = clips.map((_, i) => `[v${i}]`).join('');
+  const filter = `${filters};${concatChain}concat=n=${clips.length}:v=1:a=0[v]`;
+
+  const cmd = [
+    `"${ffmpegPath.path}" -y`,
+    inputs,
+    `-i "${audioPath}"`,
+    `-filter_complex "${filter}"`,
+    `-map "[v]" -map ${clips.length}:a`,
+    '-c:v libx264 -preset medium -crf 21 -pix_fmt yuv420p',
+    '-c:a aac -b:a 192k -ar 48000 -ac 2',
+    `-shortest -t ${totalSeconds} -movflags +faststart`,
+    `"${outputPath}"`
+  ].join(' ');
+
+  await execAsync(cmd, { maxBuffer: 200 * 1024 * 1024 });
 }
 
 async function generateImages(prompts, outputDir) {
@@ -530,23 +766,135 @@ async function generateImages(prompts, outputDir) {
   return imagePaths;
 }
 
+// Divide el texto en fragmentos <=180 caracteres respetando límites de frase/palabra.
+function splitTextForTTS(text, maxLen = 180) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+  const sentences = clean.match(/[^.!?]+[.!?]*/g) || [clean];
+  const chunks = [];
+  let current = '';
+  for (const s of sentences) {
+    const sentence = s.trim();
+    if (sentence.length > maxLen) {
+      // frase muy larga: trocear por palabras
+      const words = sentence.split(' ');
+      for (const w of words) {
+        if ((current + ' ' + w).trim().length > maxLen) {
+          if (current) chunks.push(current.trim());
+          current = w;
+        } else {
+          current = (current + ' ' + w).trim();
+        }
+      }
+    } else if ((current + ' ' + sentence).trim().length > maxLen) {
+      if (current) chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current = (current + ' ' + sentence).trim();
+    }
+  }
+  if (current) chunks.push(current.trim());
+  return chunks;
+}
+
+// TTS gratuito sin key vía Google Translate (es). Trocea, descarga y concatena con FFmpeg.
+async function synthesizeGoogleTTS(script, outputPath, lang = 'es') {
+  const chunks = splitTextForTTS(script, 180);
+  if (!chunks.length) return false;
+  const tmpDir = join(dirname(outputPath), 'tts_parts');
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const partPaths = [];
+  try {
+    for (let i = 0; i < chunks.length; i++) {
+      const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(chunks[i])}&tl=${lang}&client=tw-ob&total=${chunks.length}&idx=${i}&textlen=${chunks[i].length}`;
+      let ok = false;
+      for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+        try {
+          const resp = await axios.get(url, {
+            responseType: 'arraybuffer',
+            timeout: 20000,
+            headers: { 'User-Agent': STOCK_UA, 'Referer': 'https://translate.google.com/' }
+          });
+          const buf = Buffer.from(resp.data);
+          if (buf.length > 500) {
+            const p = join(tmpDir, `part_${i}.mp3`);
+            fs.writeFileSync(p, buf);
+            partPaths.push(p);
+            ok = true;
+          }
+        } catch {
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      }
+      if (!ok) { /* salta el fragmento fallido pero continúa */ }
+    }
+
+    if (!partPaths.length) return false;
+
+    // Concatenar todas las partes re-codificando para evitar problemas de cabeceras
+    const listFile = join(tmpDir, 'list.txt');
+    fs.writeFileSync(listFile, partPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'));
+    await execAsync(
+      `"${ffmpegPath.path}" -y -f concat -safe 0 -i "${listFile}" -c:a libmp3lame -b:a 128k "${outputPath}"`,
+      { maxBuffer: 50 * 1024 * 1024 }
+    );
+    return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000;
+  } catch (err) {
+    pushLog(`[GoogleTTS] error: ${err.message}`);
+    return false;
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+// Genera una pista silenciosa (último recurso para que el video siempre se construya).
+async function makeSilentAudio(outputPath, seconds) {
+  await execAsync(
+    `"${ffmpegPath.path}" -y -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 -t ${seconds} -c:a libmp3lame -b:a 96k "${outputPath}"`
+  );
+  return true;
+}
+
 async function generateNarration(script, outputPath) {
-  let generated = false;
+  // 1) Abacus Audio (si está configurado)
   if (ABACUS_AUDIO_API_URL && ABACUS_API_KEY) {
-    generated = await generateNarrationWithAbacus(script, outputPath);
+    if (await generateNarrationWithAbacus(script, outputPath)) return 'abacus';
   }
 
-  if (!generated) {
-    if (!ttsClient) throw new Error('TTS no configurado. Configura OPENAI_API_KEY o TTS_API_KEY.');
-    const tts = await ttsClient.audio.speech.create({
-      model: process.env.TTS_MODEL || 'tts-1-hd',
-      voice: process.env.TTS_VOICE || 'nova',
-      input: script,
-      response_format: 'mp3',
-      speed: Number(process.env.TTS_SPEED || 0.95)
-    });
-    fs.writeFileSync(outputPath, Buffer.from(await tts.arrayBuffer()));
+  // 2) OpenAI / TTS_API_KEY (si está configurado) — voz HD natural
+  if (ttsClient) {
+    try {
+      const tts = await ttsClient.audio.speech.create({
+        model: process.env.TTS_MODEL || 'tts-1-hd',
+        voice: process.env.TTS_VOICE || 'nova',
+        input: script,
+        response_format: 'mp3',
+        speed: Number(process.env.TTS_SPEED || 0.95)
+      });
+      fs.writeFileSync(outputPath, Buffer.from(await tts.arrayBuffer()));
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) return 'openai';
+    } catch (err) {
+      pushLog(`[OpenAI TTS] fallo, usando fallback gratuito: ${err.message}`);
+    }
   }
+
+  // 3) Google Translate TTS (gratis, sin key) — fallback robusto en español
+  if (await synthesizeGoogleTTS(script, outputPath, 'es')) return 'google';
+
+  // 4) Último recurso: pista silenciosa para que el video siempre se genere
+  pushLog('[Narración] Todas las fuentes TTS fallaron, usando pista silenciosa.');
+  await makeSilentAudio(outputPath, estimateSeconds(script));
+  return 'silent';
+}
+
+// Duración real del audio (segundos) usando ffprobe/ffmpeg.
+async function getAudioDuration(audioPath) {
+  try {
+    const { stderr } = await execAsync(`"${ffmpegPath.path}" -i "${audioPath}" -f null - 2>&1 || true`);
+    const m = String(stderr || '').match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
+    if (m) return (+m[1]) * 3600 + (+m[2]) * 60 + parseFloat(m[3]);
+  } catch {}
+  return null;
 }
 
 function estimateSeconds(script) {
@@ -555,14 +903,18 @@ function estimateSeconds(script) {
 }
 
 async function buildCinematicVideo(images, audioPath, outputPath, totalSeconds) {
-  const perImage = (totalSeconds / images.length).toFixed(2);
-  const imageInputs = images.map((p) => `-loop 1 -t ${perImage} -i "${p}"`).join(' ');
+  const fps = 30;
+  // Frames por imagen. zoompan controla la duración (NO usar -loop, que multiplica los frames).
+  const perFrames = Math.max(fps, Math.round((totalSeconds / images.length) * fps));
+  const imageInputs = images.map((p) => `-i "${p}"`).join(' ');
 
-  // Resolución reducida para ahorrar memoria (720x1280 en vez de 1080x1920)
+  // Movimiento Ken Burns: cada imagen es UNA entrada y zoompan genera 'perFrames' frames.
+  // Se escala el origen a 1080x1920 para dar margen de zoom y se emite a 720x1280 (memoria optimizada).
   const visualFilters = images.map((_, i) => {
-    const zoomStart = 1.0 + (i % 3) * 0.03;
-    const zoomEnd = zoomStart + 0.1;
-    return `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='if(lte(on,1),${zoomStart},min(zoom+0.0012,${zoomEnd}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=75:s=720x1280,fps=30,format=yuv420p[v${i}]`;
+    const zoomIn = i % 2 === 0;
+    // zoom suave hacia dentro o hacia fuera, con paneo centrado
+    const z = zoomIn ? `min(zoom+0.0012,1.30)` : `if(lte(zoom,1.0),1.30,max(zoom-0.0012,1.0))`;
+    return `[${i}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='${z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${perFrames}:s=720x1280:fps=${fps},setsar=1,format=yuv420p[v${i}]`;
   }).join(';');
 
   const concatChain = images.map((_, i) => `[v${i}]`).join('');
@@ -574,13 +926,23 @@ async function buildCinematicVideo(images, audioPath, outputPath, totalSeconds) 
     `-i "${audioPath}"`,
     `-filter_complex "${filter}"`,
     `-map "[v]" -map ${images.length}:a`,
-    '-c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p',
+    '-c:v libx264 -preset medium -crf 21 -pix_fmt yuv420p',
     '-c:a aac -b:a 192k -ar 48000 -ac 2',
     `-shortest -t ${totalSeconds} -movflags +faststart`,
     `"${outputPath}"`
   ].join(' ');
 
   await execAsync(cmd, { maxBuffer: 150 * 1024 * 1024 });
+}
+
+// Extrae un fotograma de un clip para usarlo como miniatura de previsualización.
+async function extractThumbnail(clipPath, outPath, atSec = 0.5) {
+  try {
+    await execAsync(`"${ffmpegPath.path}" -y -ss ${atSec} -i "${clipPath}" -frames:v 1 -vf "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280" "${outPath}"`);
+    return fs.existsSync(outPath);
+  } catch {
+    return false;
+  }
 }
 
 async function saveGeneratedRecord(record) {
@@ -604,31 +966,71 @@ async function getLearningContext() {
 async function generateVideoPipeline({ topic, source = 'manual' }) {
   const sessionId = crypto.randomBytes(8).toString('hex');
   const workDir = join(__dirname, 'public', 'videos', sessionId);
-  fs.mkdirSync(workDir, { recursive: true });
+  const imgDir = join(workDir, 'imgs');
+  fs.mkdirSync(imgDir, { recursive: true });
 
   const learningContext = await getLearningContext();
   const scriptData = await generateScript(topic, learningContext);
-  const imgDir = join(workDir, 'imgs');
-  const images = await generateImages(scriptData.image_queries || [topic], imgDir);
-  
-  // Registrar imágenes para limpieza
-  images.forEach(img => registerTempFile(img));
-  
+  const queries = scriptData.image_queries?.length ? scriptData.image_queries : [topic];
+
+  // 1) Narración primero, para sincronizar la duración del video con la voz real.
   const audioPath = join(workDir, 'narration.mp3');
-  await generateNarration(scriptData.script, audioPath);
+  const narrationSource = await generateNarration(scriptData.script, audioPath);
   registerTempFile(audioPath);
+
+  const audioDuration = await getAudioDuration(audioPath);
+  const duration = Math.max(15, Math.min(60, Math.round(audioDuration || estimateSeconds(scriptData.script))));
 
   const videoPath = join(workDir, 'video.mp4');
   registerTempFile(videoPath);
-  
-  const duration = estimateSeconds(scriptData.script);
 
-  let usedAbacusVideo = false;
+  // 2) Estrategia visual (de mayor a menor calidad):
+  //    a) Abacus video  b) clips de stock reales (Pexels/Pixabay)  c) imágenes reales + Ken Burns
+  let visualMode = 'images';
+  let slides = [];
+
+  // a) Abacus video generativo (si está configurado)
+  let built = false;
   if (ABACUS_VIDEO_API_URL && ABACUS_API_KEY) {
-    usedAbacusVideo = await generateVideoWithAbacus(scriptData.shots, videoPath);
+    if (await generateVideoWithAbacus(scriptData.shots, videoPath)) {
+      built = true;
+      visualMode = 'abacus_video';
+    }
   }
-  if (!usedAbacusVideo) {
+
+  // b) Clips de video stock REALES (solo si hay PEXELS_API_KEY / PIXABAY_API_KEY)
+  if (!built && (PEXELS_API_KEY || PIXABAY_API_KEY)) {
+    const clips = await fetchStockVideoClips(queries, imgDir, 5);
+    if (clips.length >= 3) {
+      await buildVideoFromClips(clips, audioPath, videoPath, duration);
+      built = true;
+      visualMode = 'stock_clips';
+      // miniaturas de previsualización a partir de los clips
+      for (let i = 0; i < clips.length; i++) {
+        const thumb = join(imgDir, `img_${i}.jpg`);
+        if (await extractThumbnail(clips[i], thumb)) {
+          registerTempFile(thumb);
+          slides.push({
+            url: `/videos/${sessionId}/imgs/img_${i}.jpg`,
+            description: scriptData.shots?.[i] || `Escena ${i + 1}`,
+            duration: Number((duration / clips.length).toFixed(1))
+          });
+        }
+      }
+    }
+  }
+
+  // c) Imágenes reales (Pexels/Pixabay/Openverse/Wikimedia) + movimiento Ken Burns
+  if (!built) {
+    const images = await generateImages(queries, imgDir);
+    images.forEach((img) => registerTempFile(img));
     await buildCinematicVideo(images, audioPath, videoPath, duration);
+    visualMode = 'images_kenburns';
+    slides = images.map((_, i) => ({
+      url: `/videos/${sessionId}/imgs/img_${i}.jpg`,
+      description: scriptData.shots?.[i] || `Escena ${i + 1}`,
+      duration: Number((duration / images.length).toFixed(1))
+    }));
   }
 
   const record = {
@@ -638,11 +1040,15 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     title: scriptData.title,
     createdAt: Date.now(),
     duration,
-    usedAbacusVideo,
+    visualMode,
+    narrationSource,
+    usedAbacusVideo: visualMode === 'abacus_video',
+    hasStockKeys: Boolean(PEXELS_API_KEY || PIXABAY_API_KEY),
     hasAbacusImage: Boolean(ABACUS_IMAGE_API_URL && ABACUS_API_KEY),
     hasAbacusAudio: Boolean(ABACUS_AUDIO_API_URL && ABACUS_API_KEY)
   };
   await saveGeneratedRecord(record);
+  pushLog(`[Pipeline] Video listo (${visualMode}, voz: ${narrationSource}, ${duration}s) sobre "${topic}"`);
 
   setTimeout(() => {
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
@@ -653,13 +1059,11 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     sessionId,
     topic,
     duration,
+    visualMode,
+    narrationSource,
     videoUrl: `/videos/${sessionId}/video.mp4`,
     scriptData,
-    slides: images.map((_, i) => ({
-      url: `/videos/${sessionId}/imgs/img_${i}.jpg`,
-      description: scriptData.shots?.[i] || `Escena ${i + 1}`,
-      duration: Number((duration / images.length).toFixed(1))
-    }))
+    slides
   };
 }
 
@@ -913,8 +1317,8 @@ app.get('/health', async (req, res) => {
 
   res.json({
     ok: true,
-    version: 'toktrend3-pro-v9.1-mem',
-    buildMarker: 'mem-opt-f32e242',
+    version: 'toktrend3-pro-v10-media',
+    buildMarker: 'real-media-pipeline',
     aiModel: aiConfig.model,
     aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1',
     abacus: {
@@ -922,6 +1326,15 @@ app.get('/health', async (req, res) => {
       imageEndpoint: Boolean(ABACUS_IMAGE_API_URL),
       videoEndpoint: Boolean(ABACUS_VIDEO_API_URL),
       audioEndpoint: Boolean(ABACUS_AUDIO_API_URL)
+    },
+    media: {
+      // Cómo se generan los visuales/voz en este despliegue:
+      stockVideo: Boolean(PEXELS_API_KEY || PIXABAY_API_KEY), // clips cinematográficos reales
+      pexels: Boolean(PEXELS_API_KEY),
+      pixabay: Boolean(PIXABAY_API_KEY),
+      freeImageSources: ['openverse', 'wikimedia'], // siempre disponibles (sin key)
+      ttsOpenAI: Boolean(ttsClient),
+      ttsFreeFallback: 'google-translate-tts' // siempre disponible (sin key)
     },
     automation: automationState,
     tiktokConnected: Boolean(token),
