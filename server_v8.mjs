@@ -1509,6 +1509,20 @@ app.post('/api/videos/manual', ensureAI, async (req, res) => {
     const topic = String(req.body.topic || '').trim();
     if (!topic) return res.status(400).json({ ok: false, error: 'topic es obligatorio' });
     const result = await generateVideoPipeline({ topic: topic.slice(0, 200), source: 'manual' });
+    
+    // Auto-Publish
+    try {
+      const desc = `${result.scriptData.description} ${(result.scriptData.hashtags || []).join(' ')}`.slice(0, 2200);
+      const publishRes = await publishSessionToTikTok({ sessionId: result.sessionId, title: result.scriptData.title, description: desc });
+      result.published = true;
+      result.publishMessage = publishRes.message;
+      pushLog(`[Manual] Auto-publicado: ${publishRes.message}`);
+    } catch (e) {
+      result.published = false;
+      result.publishError = e.message;
+      pushLog(`[Manual] Error al publicar: ${e.message}`);
+    }
+    
     res.json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -1537,6 +1551,20 @@ app.post('/api/videos/trending', ensureAI, async (req, res) => {
     persistAutomationState();
     
     const result = await generateVideoPipeline({ topic: selected.topic, source: selected.source || 'trending' });
+    
+    // Auto-Publish
+    try {
+      const desc = `${result.scriptData.description} ${(result.scriptData.hashtags || []).join(' ')}`.slice(0, 2200);
+      const publishRes = await publishSessionToTikTok({ sessionId: result.sessionId, title: result.scriptData.title, description: desc });
+      result.published = true;
+      result.publishMessage = publishRes.message;
+      pushLog(`[Trending] Auto-publicado: ${publishRes.message}`);
+    } catch (e) {
+      result.published = false;
+      result.publishError = e.message;
+      pushLog(`[Trending] Error al publicar: ${e.message}`);
+    }
+
     res.json({ ...result, trend: selected, trends });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });

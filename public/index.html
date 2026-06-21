@@ -390,7 +390,9 @@ async function runGenerate(topic, autoPub=false) {
     vidCount++;
     $('#btnCount').textContent=`🎬 ${vidCount} vídeo${vidCount!==1?'s':''}`;
     setAgent('Video listo ✓', 100);
-    if (autoPub) await doPub(d.scriptData);
+    if (d.published) setTimeout(() => alert(`✅ ¡Video Generado y Subido Automáticamente a TikTok!\n\n${d.publishMessage}`), 500);
+    else if (d.publishError) setTimeout(() => alert(`⚠️ Video generado pero falló al subir:\n\n${d.publishError}`), 500);
+    else if (autoPub) await doPub(d.scriptData);
   } finally {
     $('#gen').disabled=false; $('#gen').textContent='🎬 Generar Video';
   }
@@ -406,6 +408,8 @@ async function runTrendingGenerate(){
     showScript(d.scriptData); startSlides();
     $('#topic').value=d.topic||'';
     setAgent(`Video trend generado: ${d.topic}`);
+    if (d.published) setTimeout(() => alert(`✅ ¡Video de Tendencia Subido Automáticamente a TikTok!\n\n${d.publishMessage}`), 500);
+    else if (d.publishError) setTimeout(() => alert(`⚠️ Video de tendencia generado pero falló al subir:\n\n${d.publishError}`), 500);
   }catch(e){ alert(e.message); setAgent('Error trend: '+e.message); }
   finally{ $('#gen').disabled=false; $('#gen').textContent='🎬 Generar Video'; }
 }
