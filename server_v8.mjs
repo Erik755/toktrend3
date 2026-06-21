@@ -1128,112 +1128,51 @@ async function getLearningContext() {
 async function generateVideoPipeline({ topic, source = 'manual' }) {
   const sessionId = crypto.randomBytes(8).toString('hex');
   const workDir = join(__dirname, 'public', 'videos', sessionId);
-  const imgDir = join(workDir, 'imgs');
-  fs.mkdirSync(imgDir, { recursive: true });
-
-  const learningContext = await getLearningContext();
-  const scriptData = await generateScript(topic, learningContext);
-  const queries = scriptData.image_queries?.length ? scriptData.image_queries : [topic];
-
-  // 1) Narración primero, para sincronizar la duración del video con la voz real.
-  const audioPath = join(workDir, 'narration.mp3');
-  const narrationSource = await generateNarration(scriptData.script, audioPath);
-  registerTempFile(audioPath);
-
-  const audioDuration = await getAudioDuration(audioPath);
-  // Duración REAL del audio (fraccional). Tope generoso (95s) para no recortar narraciones
-  // largas; el video se construye con una cola extra para que el diálogo nunca se corte.
-  const audioSec = Math.max(8, Math.min(95, audioDuration || estimateSeconds(scriptData.script)));
-  const duration = audioSec;                 // se pasa a los constructores de video (fraccional)
-  const displayDuration = Math.round(audioSec); // valor entero para UI/registro
+  fs.mkdirSync(workDir, { recursive: true });
 
   const videoPath = join(workDir, 'video.mp4');
-
-  // 2) Estrategia visual:
-  //    a) Abacus video (si está configurado)
-  //    b) PRINCIPAL: imágenes CINEMATOGRÁFICAS generadas por IA (Pollinations/Flux) + Ken Burns
-  //    c) (opcional) clips de stock reales, solo si PREFER_STOCK_VIDEO=true y hay key
-  let visualMode = 'images';
-  let slides = [];
-
-  // a) Abacus video generativo (si está configurado)
-  let built = false;
-  if (ABACUS_VIDEO_API_URL && ABACUS_API_KEY) {
-    if (await generateVideoWithAbacus(scriptData.shots, videoPath)) {
-      built = true;
-      visualMode = 'abacus_video';
+  
+  try {
+    const { Client } = await import('@gradio/client');
+    const agentUrl = process.env.GRADIO_AGENT_URL || "http://127.0.0.1:7860/";
+    const apiKey = process.env.GEMINI_API_KEY || "DEBES_PONER_TU_API_KEY_AQUI";
+    
+    pushLog(`[Pipeline] Llamando al Agente Local de Gradio para el tema: "${topic}"...`);
+    
+    const client = await Client.connect(agentUrl);
+    const result = await client.predict("/generate_video", [topic, apiKey]);
+    
+    const videoData = result.data[0];
+    const statusMsg = result.data[1];
+    
+    pushLog(`[Pipeline] Agente devolvió estado: ${statusMsg}`);
+    
+    let videoUrlToDownload = videoData.url;
+    if (!videoUrlToDownload && videoData.path) {
+        videoUrlToDownload = `${agentUrl.replace(/\/$/, '')}/file=${videoData.path}`;
     }
-  }
-
-  // b) OPCIONAL: clips de video stock REALES (solo si se prefiere explícitamente y hay key)
-  if (!built && PREFER_STOCK_VIDEO && (PEXELS_API_KEY || PIXABAY_API_KEY)) {
-    const clips = await fetchStockVideoClips(queries, imgDir, 5);
-    if (clips.length >= 3) {
-      await buildVideoFromClips(clips, audioPath, videoPath, duration);
-      built = true;
-      visualMode = 'stock_clips';
-      // miniaturas de previsualización a partir de los clips
-      for (let i = 0; i < clips.length; i++) {
-        const thumb = join(imgDir, `img_${i}.jpg`);
-        if (await extractThumbnail(clips[i], thumb)) {
-          slides.push({
-            url: `/videos/${sessionId}/imgs/img_${i}.jpg`,
-            description: scriptData.shots?.[i] || `Escena ${i + 1}`,
-            duration: Number((displayDuration / clips.length).toFixed(1))
-          });
-        }
-      }
+    if (videoUrlToDownload && videoUrlToDownload.startsWith('/')) {
+        videoUrlToDownload = agentUrl.replace(/\/$/, '') + videoUrlToDownload;
     }
+    
+    const resp = await axios.get(videoUrlToDownload, { responseType: 'arraybuffer', timeout: 300000 });
+    fs.writeFileSync(videoPath, Buffer.from(resp.data));
+    
+    return {
+      ok: true,
+      sessionId,
+      topic,
+      duration: 30,
+      visualMode: 'agente_python',
+      narrationSource: 'agente_python',
+      videoUrl: `/videos/${sessionId}/video.mp4`,
+      scriptData: { script: statusMsg },
+      slides: []
+    };
+  } catch (err) {
+    pushLog(`[Pipeline] Error al contactar al agente: ${err.message}`);
+    throw err;
   }
-
-  // c) PRINCIPAL: imágenes CINEMATOGRÁFICAS generadas por IA + movimiento Ken Burns
-  //    (generateImages usa Pollinations/Flux como fuente principal y stock real como respaldo)
-  if (!built) {
-    const images = await generateImages(queries, imgDir);
-    await buildCinematicVideo(images, audioPath, videoPath, duration);
-    visualMode = AI_IMAGES_ENABLED ? 'ai_images_kenburns' : 'images_kenburns';
-    slides = images.map((_, i) => ({
-      url: `/videos/${sessionId}/imgs/img_${i}.jpg`,
-      description: scriptData.shots?.[i] || `Escena ${i + 1}`,
-      duration: Number((displayDuration / images.length).toFixed(1))
-    }));
-  }
-
-  const record = {
-    sessionId,
-    topic,
-    source,
-    title: scriptData.title,
-    createdAt: Date.now(),
-    duration: displayDuration,
-    visualMode,
-    narrationSource,
-    usedAbacusVideo: visualMode === 'abacus_video',
-    hasStockKeys: Boolean(PEXELS_API_KEY || PIXABAY_API_KEY),
-    hasAbacusImage: Boolean(ABACUS_IMAGE_API_URL && ABACUS_API_KEY),
-    hasAbacusAudio: Boolean(ABACUS_AUDIO_API_URL && ABACUS_API_KEY),
-    videoUrl: `/videos/${sessionId}/video.mp4`,
-    scriptData,
-    slides
-  };
-  await saveGeneratedRecord(record);
-  pushLog(`[Pipeline] Video listo (${visualMode}, voz: ${narrationSource}, ${displayDuration}s) sobre "${topic}"`);
-
-  setTimeout(() => {
-    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
-  }, 60 * 60 * 1000);
-
-  return {
-    ok: true,
-    sessionId,
-    topic,
-    duration: displayDuration,
-    visualMode,
-    narrationSource,
-    videoUrl: `/videos/${sessionId}/video.mp4`,
-    scriptData,
-    slides
-  };
 }
 
 // ---------------- TikTok publish ----------------

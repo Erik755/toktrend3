@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
- "scripts": {
-  "start": "node --expose-gc --max-old-space-size=400 server_v8.mjs",
-  "dev": "node --watch --expose-gc --max-old-space-size=400 server_v8.mjs"
-},
+  "scripts": {
+    "start": "node --expose-gc --max-old-space-size=400 server_v8.mjs",
+    "dev": "node --watch --expose-gc --max-old-space-size=400 server_v8.mjs"
+  },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@gradio/client": "^2.3.0",
     "axios": "^1.17.0",
     "cors": "latest",
     "dotenv": "latest",
