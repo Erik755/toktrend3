@@ -640,32 +640,35 @@ function buildCinematicPrompt(query) {
     `epic movie scene, anamorphic, high dynamic range`;
 }
 
-// Genera UNA imagen por IA con Pollinations (Flux). Gratis y sin API key.
-// La generación puede tardar varios segundos, por eso el timeout es amplio.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Genera UNA imagen por IA con Pollinations (Flux/Turbo). Gratis y sin API key.
+// IMPORTANTE: la API SIN KEY limita a ~1 petición simultánea (responde 429 si hay concurrencia).
+// Por eso se llama SECUENCIALMENTE y se reintenta con backoff cuando hay 429.
 async function generateAiImage(query, outputPath, idx = 0) {
   if (!AI_IMAGES_ENABLED) return false;
   const prompt = buildCinematicPrompt(query);
-  // seed estable por escena para reproducibilidad + variedad entre escenas
-  const seed = (Math.floor(Math.random() * 1e6) + idx * 7919) % 1000000;
-  const params = new URLSearchParams({
-    width: '768',
-    height: '1344',          // vertical 9:16 para TikTok
-    model: POLLINATIONS_MODEL,
-    nologo: 'true',
-    enhance: 'true',          // la IA mejora el prompt para mayor calidad
-    seed: String(seed),
-    safe: 'true'
-  });
-  if (POLLINATIONS_KEY) params.set('key', POLLINATIONS_KEY);
+  let seed = (Math.floor(Math.random() * 1e6) + idx * 7919) % 1000000;
+  // Alternamos de modelo en intentos tardíos por si uno está saturado.
+  const models = [POLLINATIONS_MODEL, POLLINATIONS_MODEL, 'turbo', 'flux'];
+  const MAX_ATTEMPTS = 4;
 
-  // Reintenta una vez (cambiando seed) si falla la primera generación.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (attempt > 0) params.set('seed', String((seed + 4111 + attempt * 131) % 1000000));
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const params = new URLSearchParams({
+      width: '768',
+      height: '1344',          // vertical 9:16 para TikTok
+      model: models[attempt] || POLLINATIONS_MODEL,
+      nologo: 'true',
+      enhance: 'true',          // la IA mejora el prompt para mayor calidad
+      seed: String(seed),
+      safe: 'true'
+    });
+    if (POLLINATIONS_KEY) params.set('key', POLLINATIONS_KEY);
     const url = `${POLLINATIONS_BASE}/${encodeURIComponent(prompt)}?${params.toString()}`;
     try {
       const resp = await axios.get(url, {
         responseType: 'arraybuffer',
-        timeout: 90000, // la generación por IA puede tardar; damos margen
+        timeout: 95000, // la generación por IA puede tardar; damos margen
         headers: { 'User-Agent': STOCK_UA, 'Accept': 'image/*' },
         maxContentLength: 25 * 1024 * 1024
       });
@@ -676,8 +679,16 @@ async function generateAiImage(query, outputPath, idx = 0) {
         return true;
       }
     } catch (err) {
-      pushLog(`[Pollinations] intento ${attempt + 1} falló: ${err.response?.status || ''} ${err.message}`);
+      const status = err.response?.status;
+      pushLog(`[Pollinations] escena ${idx} intento ${attempt + 1} (${models[attempt]}) falló: ${status || ''} ${err.message}`);
+      // 429 = rate limit: esperar (backoff) y reintentar; suele resolverse al esperar.
+      if (status === 429 && attempt < MAX_ATTEMPTS - 1) {
+        await sleep(4000 + attempt * 4000); // 4s, 8s, 12s
+      } else if (attempt < MAX_ATTEMPTS - 1) {
+        await sleep(1500);
+      }
     }
+    seed = (seed + 4111 + attempt * 131) % 1000000; // varía la semilla en el próximo intento
   }
   return false;
 }
@@ -823,8 +834,9 @@ async function generateImages(prompts, outputDir) {
   const imagePaths = new Array(COUNT);
   let aiCount = 0;
 
-  // Genera la imagen de UNA escena (slot i) con la cascada IA -> stock real.
-  const genOne = async (i) => {
+  // SECUENCIAL (concurrencia=1): la API gratuita de Pollinations rechaza peticiones
+  // simultáneas con 429. Generar una a una garantiza que casi todas sean imágenes IA.
+  for (let i = 0; i < COUNT; i++) {
     const p = prompts[i] || prompts[0] || 'cinematic storytelling';
     const outPath = join(outputDir, `img_${i}.jpg`);
     let ok = false;
@@ -837,20 +849,13 @@ async function generateImages(prompts, outputDir) {
       ok = await generateAiImage(p, outPath, i);
       if (ok) aiCount++;
     }
-    // 3) Último recurso: imagen real de stock / gradiente (solo si la IA falló)
+    // 3) Último recurso: imagen real de stock / gradiente (solo si la IA falló tras varios intentos)
     if (!ok) {
       await fetchFallbackImage(p, outPath, i);
     }
     imagePaths[i] = outPath;
-  };
-
-  // Generación en PARALELO con concurrencia limitada (3) para acelerar sin saturar la API
-  // ni disparar la memoria (cada imagen pesa ~50-90KB; el coste de memoria real es FFmpeg).
-  const CONCURRENCY = 3;
-  for (let start = 0; start < COUNT; start += CONCURRENCY) {
-    const batch = [];
-    for (let i = start; i < Math.min(start + CONCURRENCY, COUNT); i++) batch.push(genOne(i));
-    await Promise.all(batch);
+    // pequeña pausa entre escenas para respetar el rate-limit de la API gratuita
+    if (i < COUNT - 1) await sleep(1200);
   }
   pushLog(`[Imágenes] ${aiCount}/${COUNT} generadas por IA (Pollinations/${POLLINATIONS_MODEL}), resto por fallback real.`);
   return imagePaths;
