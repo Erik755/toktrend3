@@ -488,11 +488,17 @@ function normalizeScriptData(data, topic) {
 }
 
 async function generateScript(topic, learningContext = '') {
-  const prompt = `Eres estratega viral de TikTok y director cinematográfico.
+  const prompt = `Eres estratega viral experto de la TikTok Creator Academy y director cinematográfico.
 Genera SOLO JSON válido para un video de 30-45s en español sobre: "${topic}".
-Incluye gancho, narrativa, tensión y cierre con CTA.
-Debes empezar el script con: "Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios."
-Termina con: "Dejame tu comentario, aprendo de ti."
+Aplica estas REGLAS ESTRICTAS para máxima retención e interacción:
+1. TÍTULO Y DESCRIPCIÓN: El "title" debe incluir un "Curiosity Gap" o misterio que incite a ver (ej: "El secreto que nadie te cuenta de...", "Lo que la historia nos ocultó sobre..."). La "description" debe estar optimizada para SEO en TikTok.
+2. ETIQUETAS (HASHTAGS): Usa de 4 a 6 etiquetas estratégicas: 2 muy específicas del nicho, 2 amplias del tema, y siempre incluye #fyp y #parati al final.
+3. GUION Y RETENCIÓN:
+ - Gancho fuerte (Hook) en los primeros 3 segundos.
+ - Ritmo rápido y con tensión constante.
+ - ESTRATEGIA DE INTERACCIÓN: Justo antes del cierre, haz una pregunta abierta muy específica, controversial o personal para forzar el debate en los comentarios (ej: "Y tú, ¿qué hubieras hecho en esta situación?", "Si tuvieras que elegir, ¿con cuál te quedas?").
+ - Empieza el script obligatoriamente con: "Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios."
+ - Termina el script obligatoriamente con: "Dejame tu comentario, aprendo de ti."
 Usa este contexto de aprendizaje (si existe): ${learningContext || 'sin contexto'}
 
 IMPORTANTE sobre "image_queries": son prompts EN INGLÉS para un GENERADOR DE IMÁGENES POR IA
@@ -503,10 +509,10 @@ Da 5 a 7 escenas distintas que cuenten la historia del video. Ejemplo:
 
 Formato exacto:
 {
- "title": "...",
+ "title": "Título intrigante (Curiosity gap)",
  "script": "...",
- "description": "...",
- "hashtags": ["#..."],
+ "description": "Descripción optimizada para SEO...",
+ "hashtags": ["#nicho1", "#nicho2", "#tema", "#fyp", "#parati"],
  "shots": ["..."],
  "image_queries": ["detailed english scene prompt for AI image generation", "..."]
 }`;
