@@ -144,6 +144,9 @@ const ANALYTICS_FILE = join(STORAGE_DIR, 'comment_analytics.json');
 const AUTOMATION_FILE = join(STORAGE_DIR, 'automation_config.json');
 fs.mkdirSync(STORAGE_DIR, { recursive: true });
 
+// ---------------- Dynamic Agent URL ----------------
+let dynamicAgentUrl = process.env.GRADIO_AGENT_URL || "http://127.0.0.1:7860/";
+
 // ---------------- Logs ----------------
 const appLogs = [];
 function pushLog(message) {
@@ -1134,7 +1137,7 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
   
   try {
     const { Client } = await import('@gradio/client');
-    const agentUrl = process.env.GRADIO_AGENT_URL || "http://127.0.0.1:7860/";
+    const agentUrl = dynamicAgentUrl;
     const apiKey = process.env.GEMINI_API_KEY || "DEBES_PONER_TU_API_KEY_AQUI";
     
     pushLog(`[Pipeline] Llamando al Agente Local de Gradio para el tema: "${topic}"...`);
@@ -1405,6 +1408,17 @@ function setupAutomation() {
 setupAutomation();
 
 // ---------------- Endpoints ----------------
+// Endpoint mágico para actualizar URL del agente local
+app.post('/api/agent/update', (req, res) => {
+  if (req.body.url) {
+    dynamicAgentUrl = req.body.url;
+    pushLog(`[Agent] Enlace Mágico conectado exitosamente: ${dynamicAgentUrl}`);
+    res.json({ ok: true, url: dynamicAgentUrl });
+  } else {
+    res.status(400).json({ ok: false, error: 'URL requerida' });
+  }
+});
+
 // Endpoint de diagnóstico de memoria
 app.get('/api/diagnostics', (req, res) => {
   const used = process.memoryUsage();
