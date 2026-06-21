@@ -122,6 +122,19 @@ const PEXELS_API_KEY = process.env.PEXELS_API_KEY || '';
 const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || '';
 const STOCK_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36';
 
+// ---------------- Generación de imágenes por IA (cinematográficas) ----------------
+// Pollinations.ai genera imágenes por IA (modelo Flux) GRATIS y SIN API KEY vía URL.
+// Es la fuente PRINCIPAL: cada escena del guion se convierte en una imagen cinematográfica
+// generada por IA (estilo DALL·E / Stable Diffusion). Si falla, se recurre a imágenes reales.
+const AI_IMAGES_ENABLED = String(process.env.AI_IMAGES_ENABLED || 'true').toLowerCase() !== 'false';
+const POLLINATIONS_MODEL = process.env.POLLINATIONS_MODEL || 'flux'; // flux | turbo
+const POLLINATIONS_BASE = 'https://image.pollinations.ai/prompt';
+// Opcional: si algún día se usa una key de Pollinations (pk_/sk_), se añade como ?key=
+const POLLINATIONS_KEY = process.env.POLLINATIONS_API_KEY || '';
+// Por defecto el modo visual PRINCIPAL son imágenes cinematográficas generadas por IA.
+// Si se quiere priorizar clips de video de stock (Pexels/Pixabay), poner PREFER_STOCK_VIDEO=true.
+const PREFER_STOCK_VIDEO = String(process.env.PREFER_STOCK_VIDEO || 'false').toLowerCase() === 'true';
+
 const STORAGE_DIR = join(__dirname, 'storage');
 const ANALYTICS_FILE = join(STORAGE_DIR, 'comment_analytics.json');
 const AUTOMATION_FILE = join(STORAGE_DIR, 'automation_config.json');
@@ -475,6 +488,12 @@ Debes empezar el script con: "Soy una inteligencia artificial autonoma que apren
 Termina con: "Dejame tu comentario, aprendo de ti."
 Usa este contexto de aprendizaje (si existe): ${learningContext || 'sin contexto'}
 
+IMPORTANTE sobre "image_queries": son prompts EN INGLÉS para un GENERADOR DE IMÁGENES POR IA
+(tipo DALL·E / Stable Diffusion). Cada uno debe describir una ESCENA cinematográfica concreta y
+visualmente rica (sujeto, entorno, acción, atmósfera, iluminación), NO palabras de búsqueda.
+Da 5 a 7 escenas distintas que cuenten la historia del video. Ejemplo:
+"a lone astronaut standing on a glowing alien desert at dusk, dramatic backlight, wide cinematic shot".
+
 Formato exacto:
 {
  "title": "...",
@@ -482,7 +501,7 @@ Formato exacto:
  "description": "...",
  "hashtags": ["#..."],
  "shots": ["..."],
- "image_queries": ["english prompt ..."]
+ "image_queries": ["detailed english scene prompt for AI image generation", "..."]
 }`;
 
   const response = await openai.chat.completions.create({
@@ -609,6 +628,58 @@ async function makeGradientBackground(outputPath, idx = 0) {
   }
   registerTempFile(outputPath);
   return true;
+}
+
+// ---------------- Generación de imágenes por IA (Pollinations / Flux) ----------------
+// Convierte la consulta de la escena en un prompt cinematográfico en inglés.
+function buildCinematicPrompt(query) {
+  const base = String(query || 'cinematic storytelling').replace(/\s+/g, ' ').trim();
+  // Si el prompt ya trae estilo, igualmente reforzamos con descriptores cinematográficos.
+  return `Cinematic film still, ${base}, dramatic cinematic lighting, shallow depth of field, ` +
+    `volumetric light, atmospheric, ultra detailed, photorealistic, 8k, professional color grading, ` +
+    `epic movie scene, anamorphic, high dynamic range`;
+}
+
+// Genera UNA imagen por IA con Pollinations (Flux). Gratis y sin API key.
+// La generación puede tardar varios segundos, por eso el timeout es amplio.
+async function generateAiImage(query, outputPath, idx = 0) {
+  if (!AI_IMAGES_ENABLED) return false;
+  const prompt = buildCinematicPrompt(query);
+  // seed estable por escena para reproducibilidad + variedad entre escenas
+  const seed = (Math.floor(Math.random() * 1e6) + idx * 7919) % 1000000;
+  const params = new URLSearchParams({
+    width: '768',
+    height: '1344',          // vertical 9:16 para TikTok
+    model: POLLINATIONS_MODEL,
+    nologo: 'true',
+    enhance: 'true',          // la IA mejora el prompt para mayor calidad
+    seed: String(seed),
+    safe: 'true'
+  });
+  if (POLLINATIONS_KEY) params.set('key', POLLINATIONS_KEY);
+
+  // Reintenta una vez (cambiando seed) si falla la primera generación.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) params.set('seed', String((seed + 4111 + attempt * 131) % 1000000));
+    const url = `${POLLINATIONS_BASE}/${encodeURIComponent(prompt)}?${params.toString()}`;
+    try {
+      const resp = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 90000, // la generación por IA puede tardar; damos margen
+        headers: { 'User-Agent': STOCK_UA, 'Accept': 'image/*' },
+        maxContentLength: 25 * 1024 * 1024
+      });
+      const buf = Buffer.from(resp.data);
+      const ct = String(resp.headers?.['content-type'] || '');
+      if (buf.length > 5000 && /image\//i.test(ct)) {
+        fs.writeFileSync(outputPath, buf);
+        return true;
+      }
+    } catch (err) {
+      pushLog(`[Pollinations] intento ${attempt + 1} falló: ${err.response?.status || ''} ${err.message}`);
+    }
+  }
+  return false;
 }
 
 // Obtiene UNA imagen real intentando todas las fuentes en orden de calidad.
@@ -748,21 +819,40 @@ async function buildVideoFromClips(clips, audioPath, outputPath, totalSeconds) {
 
 async function generateImages(prompts, outputDir) {
   fs.mkdirSync(outputDir, { recursive: true });
-  const imagePaths = [];
-  // Reducido de 7 a 5 imágenes para optimizar memoria
-  for (let i = 0; i < 5; i++) {
+  const COUNT = 5; // 5 imágenes (optimización de memoria)
+  const imagePaths = new Array(COUNT);
+  let aiCount = 0;
+
+  // Genera la imagen de UNA escena (slot i) con la cascada IA -> stock real.
+  const genOne = async (i) => {
     const p = prompts[i] || prompts[0] || 'cinematic storytelling';
     const outPath = join(outputDir, `img_${i}.jpg`);
     let ok = false;
-
+    // 1) Abacus (si está configurado en producción)
     if (ABACUS_IMAGE_API_URL && ABACUS_API_KEY) {
       ok = await generateImageWithAbacus(p, outPath);
     }
+    // 2) PRINCIPAL: imagen CINEMATOGRÁFICA generada por IA (Pollinations / Flux, gratis y sin key)
+    if (!ok) {
+      ok = await generateAiImage(p, outPath, i);
+      if (ok) aiCount++;
+    }
+    // 3) Último recurso: imagen real de stock / gradiente (solo si la IA falló)
     if (!ok) {
       await fetchFallbackImage(p, outPath, i);
     }
-    imagePaths.push(outPath);
+    imagePaths[i] = outPath;
+  };
+
+  // Generación en PARALELO con concurrencia limitada (3) para acelerar sin saturar la API
+  // ni disparar la memoria (cada imagen pesa ~50-90KB; el coste de memoria real es FFmpeg).
+  const CONCURRENCY = 3;
+  for (let start = 0; start < COUNT; start += CONCURRENCY) {
+    const batch = [];
+    for (let i = start; i < Math.min(start + CONCURRENCY, COUNT); i++) batch.push(genOne(i));
+    await Promise.all(batch);
   }
+  pushLog(`[Imágenes] ${aiCount}/${COUNT} generadas por IA (Pollinations/${POLLINATIONS_MODEL}), resto por fallback real.`);
   return imagePaths;
 }
 
@@ -984,8 +1074,10 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
   const videoPath = join(workDir, 'video.mp4');
   registerTempFile(videoPath);
 
-  // 2) Estrategia visual (de mayor a menor calidad):
-  //    a) Abacus video  b) clips de stock reales (Pexels/Pixabay)  c) imágenes reales + Ken Burns
+  // 2) Estrategia visual:
+  //    a) Abacus video (si está configurado)
+  //    b) PRINCIPAL: imágenes CINEMATOGRÁFICAS generadas por IA (Pollinations/Flux) + Ken Burns
+  //    c) (opcional) clips de stock reales, solo si PREFER_STOCK_VIDEO=true y hay key
   let visualMode = 'images';
   let slides = [];
 
@@ -998,8 +1090,8 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     }
   }
 
-  // b) Clips de video stock REALES (solo si hay PEXELS_API_KEY / PIXABAY_API_KEY)
-  if (!built && (PEXELS_API_KEY || PIXABAY_API_KEY)) {
+  // b) OPCIONAL: clips de video stock REALES (solo si se prefiere explícitamente y hay key)
+  if (!built && PREFER_STOCK_VIDEO && (PEXELS_API_KEY || PIXABAY_API_KEY)) {
     const clips = await fetchStockVideoClips(queries, imgDir, 5);
     if (clips.length >= 3) {
       await buildVideoFromClips(clips, audioPath, videoPath, duration);
@@ -1020,12 +1112,13 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     }
   }
 
-  // c) Imágenes reales (Pexels/Pixabay/Openverse/Wikimedia) + movimiento Ken Burns
+  // c) PRINCIPAL: imágenes CINEMATOGRÁFICAS generadas por IA + movimiento Ken Burns
+  //    (generateImages usa Pollinations/Flux como fuente principal y stock real como respaldo)
   if (!built) {
     const images = await generateImages(queries, imgDir);
     images.forEach((img) => registerTempFile(img));
     await buildCinematicVideo(images, audioPath, videoPath, duration);
-    visualMode = 'images_kenburns';
+    visualMode = AI_IMAGES_ENABLED ? 'ai_images_kenburns' : 'images_kenburns';
     slides = images.map((_, i) => ({
       url: `/videos/${sessionId}/imgs/img_${i}.jpg`,
       description: scriptData.shots?.[i] || `Escena ${i + 1}`,
@@ -1317,8 +1410,8 @@ app.get('/health', async (req, res) => {
 
   res.json({
     ok: true,
-    version: 'toktrend3-pro-v10-media',
-    buildMarker: 'real-media-pipeline',
+    version: 'toktrend3-pro-v11-ai-images',
+    buildMarker: 'ai-image-generation',
     aiModel: aiConfig.model,
     aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1',
     abacus: {
@@ -1329,10 +1422,14 @@ app.get('/health', async (req, res) => {
     },
     media: {
       // Cómo se generan los visuales/voz en este despliegue:
-      stockVideo: Boolean(PEXELS_API_KEY || PIXABAY_API_KEY), // clips cinematográficos reales
+      primaryVisual: AI_IMAGES_ENABLED && !PREFER_STOCK_VIDEO ? 'ai_generated_images' : (PREFER_STOCK_VIDEO ? 'stock_video' : 'real_images'),
+      aiImages: AI_IMAGES_ENABLED, // imágenes cinematográficas generadas por IA (Pollinations/Flux)
+      aiImageProvider: AI_IMAGES_ENABLED ? `pollinations:${POLLINATIONS_MODEL}` : null,
+      preferStockVideo: PREFER_STOCK_VIDEO,
+      stockVideo: Boolean(PEXELS_API_KEY || PIXABAY_API_KEY), // clips cinematográficos reales (opcional)
       pexels: Boolean(PEXELS_API_KEY),
       pixabay: Boolean(PIXABAY_API_KEY),
-      freeImageSources: ['openverse', 'wikimedia'], // siempre disponibles (sin key)
+      freeImageSources: ['pollinations(ai)', 'openverse', 'wikimedia'], // siempre disponibles (sin key)
       ttsOpenAI: Boolean(ttsClient),
       ttsFreeFallback: 'google-translate-tts' // siempre disponible (sin key)
     },
