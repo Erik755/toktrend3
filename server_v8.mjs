@@ -1159,23 +1159,34 @@ async function generateVideoPipeline({ topic, source = 'manual', learningContext
     
     const videoData = result.data[0];
     const statusMsg = result.data[1];
+    const b64Data = result.data[2];
     
     pushLog(`[Pipeline] Agente devolvió estado: ${statusMsg}`);
-    
-    let videoUrlToDownload = videoData.url;
-    if (!videoUrlToDownload && videoData.path) {
-        videoUrlToDownload = `${agentUrl.replace(/\/$/, '')}/file=${videoData.path}`;
+
+    if (b64Data && b64Data.length > 100) {
+      pushLog(`[Pipeline] Video recibido vía WebSocket (${Math.round(b64Data.length / 1024 / 1024)} MB). Guardando...`);
+      fs.writeFileSync(videoPath, Buffer.from(b64Data, 'base64'));
+    } else {
+      pushLog(`[Pipeline] Modo WebSocket falló. Intentando descarga HTTP normal...`);
+      // Fallback a descarga normal si falla Base64
+      if (!videoData) throw new Error("Gradio devolvió respuesta vacía para el video");
+      let videoUrlToDownload = videoData.url;
+      if (!videoUrlToDownload && videoData.path) {
+          videoUrlToDownload = `${agentUrl.replace(/\/$/, '')}/file=${videoData.path}`;
+      }
+      if (videoUrlToDownload && videoUrlToDownload.startsWith('/')) {
+          videoUrlToDownload = agentUrl.replace(/\/$/, '') + videoUrlToDownload;
+      }
+      if (!videoUrlToDownload || !videoUrlToDownload.startsWith('http')) throw new Error(`URL de video inválida: ${videoUrlToDownload}`);
+
+      pushLog(`[Pipeline] Descargando video generado: ${videoUrlToDownload}`);
+      const resp = await axios.get(videoUrlToDownload, { 
+        responseType: 'arraybuffer', 
+        timeout: 300000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36' }
+      });
+      fs.writeFileSync(videoPath, Buffer.from(resp.data));
     }
-    if (videoUrlToDownload && videoUrlToDownload.startsWith('/')) {
-        videoUrlToDownload = agentUrl.replace(/\/$/, '') + videoUrlToDownload;
-    }
-    
-    const resp = await axios.get(videoUrlToDownload, { 
-      responseType: 'arraybuffer', 
-      timeout: 300000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36' }
-    });
-    fs.writeFileSync(videoPath, Buffer.from(resp.data));
     
     let viralData = { title: topic, description: `Video sobre ${topic}`, hashtags: ['#viral', '#parati'] };
     try {
