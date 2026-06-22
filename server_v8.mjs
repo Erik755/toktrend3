@@ -181,7 +181,7 @@ function ensureAI(req, res, next) {
 }
 
 // ---------------- TikTok OAuth / Tokens ----------------
-const DEFAULT_TIKTOK_REDIRECT_URI = 'https://talktrend.onrender.com/api/tiktok/oauth/callback';
+const DEFAULT_TIKTOK_REDIRECT_URI = 'https://talktrend.216.24.57.1.nip.io/api/tiktok/oauth/callback';
 function normalizeTikTokRedirectUri(value) {
   const uri = String(value || '').trim();
   if (!uri) return DEFAULT_TIKTOK_REDIRECT_URI;
