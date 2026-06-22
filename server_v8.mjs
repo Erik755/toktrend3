@@ -1577,6 +1577,7 @@ app.get('/api/generate', ensureAI, async (req, res) => {
   }
 });
 
+<<<<<<< Updated upstream
 // 1) Generar video manual (con control de concurrencia)
 app.post('/api/videos/manual', ensureAI, async (req, res) => {
   if (isGenerating) {
@@ -1589,6 +1590,55 @@ app.post('/api/videos/manual', ensureAI, async (req, res) => {
   }
   
   isGenerating = true;
+=======
+// Update from Agent (Gradio)
+app.post('/api/agent/update', async (req, res) => {
+  try {
+    const { url, b64, script_data } = req.body;
+    console.log('[Agent Update] Received notification. URL:', url, 'Has b64:', Boolean(b64));
+    
+    if (b64 && b64.length > 500) {
+      const sessionId = 'agent_' + crypto.randomBytes(4).toString('hex');
+      const workDir = join(__dirname, 'public', 'videos', sessionId);
+      fs.mkdirSync(workDir, { recursive: true });
+      const videoPath = join(workDir, 'video.mp4');
+      fs.writeFileSync(videoPath, Buffer.from(b64, 'base64'));
+      console.log(`[Agent Update] Saved video to ${videoPath}`);
+
+      if (db) {
+        try {
+          await db.collection('generated_videos').doc(sessionId).set({
+            topic: script_data?.title || 'TokTrend AI Video',
+            title: script_data?.title || 'TokTrend AI Video',
+            createdAt: Date.now()
+          });
+        } catch (e) { console.error('[Agent Update DB]', e.message); }
+      }
+
+      // Automatically publish to TikTok!
+      console.log('[Agent Update] Triggering local publish...');
+      try {
+        await axios.post(`http://127.0.0.1:${port}/api/publish`, {
+          sessionId,
+          title: script_data?.title || 'TokTrend AI Video',
+          description: script_data?.description || 'Video generado por TokTrend IA autonoma'
+        });
+        console.log('[Agent Update] Auto-publish requested successfully');
+      } catch (pubErr) {
+        console.error('[Agent Update Publish Error]', pubErr.message);
+      }
+    }
+    
+    res.json({ ok: true, received: true });
+  } catch (err) {
+    console.error('[Agent Update Error]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Publish video to TikTok
+app.post('/api/publish', async (req, res) => {
+>>>>>>> Stashed changes
   try {
     const topic = String(req.body.topic || '').trim();
     if (!topic) return res.status(400).json({ ok: false, error: 'topic es obligatorio' });
