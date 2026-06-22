@@ -296,17 +296,9 @@ async function getGoogleTrending(limit = 10) {
 }
 
 async function getRedditTrending(limit = 10) {
-  try {
-    const { data } = await axios.get('https://www.reddit.com/r/popular/hot.json?limit=30', { timeout: 12000, headers: { 'User-Agent': 'node:toktrend_bot:v1.0 (by /u/erik_toktrend)' } });
-    const children = data?.data?.children || [];
-    return children.slice(0, limit).map((item) => ({
-      topic: item?.data?.title?.slice(0, 120),
-      source: 'reddit_hot',
-      score: Number(item?.data?.ups || 0)
-    })).filter((x) => x.topic);
-  } catch (err) {
-    pushLog(`[Trends] Reddit error: ${err.message}`);
-    return [];
+  // Reddit now strictly blocks non-OAuth requests (403 Forbidden). 
+  // Disabled to prevent log spam and failed requests.
+  return [];
   }
 }
 
