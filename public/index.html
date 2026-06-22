@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TokTrend | IA Agente Autónomo</title>
+<title>TalkTrend</title>
+<link rel="icon" href="/app_icon.png" type="image/png">
 <style>
 :root{--bg:#07070c;--cyan:#06b6d4;--violet:#7213ff;--pink:#e879f9;--ok:#10b981;--bad:#fb7185;--muted:#a1a1aa}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -104,7 +105,7 @@ textarea:focus{border-color:var(--cyan)}
 <header>
   <div class="brand">
     <div class="logo">TT</div>
-    <div><h1>TOKTREND <span style="color:#67e8f9">AGENT</span></h1><small>IA autónoma · Video MP4 con audio · 29s</small></div>
+    <div><h1>TALKTREND <span style="color:#67e8f9">AGENT</span></h1><small>IA autónoma · Video MP4 con audio · 29s</small></div>
   </div>
   <div class="hdr-right">
     <span class="pill loading" id="hPill">⏳ Conectando…</span>
@@ -153,9 +154,9 @@ textarea:focus{border-color:var(--cyan)}
             <div class="ico">❤</div><div class="ico">💬</div><div class="ico">↗</div>
           </div>
           <div class="caption">
-            <b id="vtitle">TokTrend AI</b>
+            <b id="vtitle">TalkTrend AI</b>
             <p id="vcap">Tu IA autónoma ✨</p>
-            <p style="margin-top:4px;font-size:8px;color:#c4c4cf" id="vmeta">#TokTrend · listo</p>
+            <p style="margin-top:4px;font-size:8px;color:#c4c4cf" id="vmeta">#TalkTrend · listo</p>
           </div>
         </div>
       </div>
@@ -187,11 +188,16 @@ textarea:focus{border-color:var(--cyan)}
   </section>
 </main>
 
+<footer style="text-align: center; padding: 20px; font-size: 12px; color: var(--muted); border-top: 1px solid rgba(255,255,255,.08); margin-top: 40px; position: relative; z-index: 1;">
+  <a href="/terms.html" style="color: var(--cyan); text-decoration: none; margin-right: 15px;">Terms of Service</a>
+  <a href="/privacy.html" style="color: var(--cyan); text-decoration: none;">Privacy Policy</a>
+</footer>
+
 <script>
 const B = window.location.origin;
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
-const lastVideoKey = 'toktrend3-last-video-v1';
+const lastVideoKey = 'talktrend3-last-video-v1';
 
 let session = null;
 let currentVideoId = null;
@@ -429,7 +435,7 @@ async function doPub(sd) {
   $('#btnPub').disabled=true; $('#btnPub').textContent='⏳ Publicando…';
   setAgent('Publicando en TikTok…', 70);
   try {
-    const title=(sd?.title||'TokTrend IA').slice(0,80);
+    const title=(sd?.title||'TalkTrend IA').slice(0,80);
     const desc=`${sd?.description||''} ${(sd?.hashtags||[]).join(' ')}`.trim().slice(0,2200);
     const r=await fetch(`${B}/api/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:session,title,description:desc,videoId:typeof currentVideoId !== 'undefined' ? currentVideoId : null})});
     const d=await r.json();

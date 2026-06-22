@@ -1,4 +1,4 @@
-# TokTrend OpenAI Agent Backend
+# TalkTrend OpenAI Agent Backend
 
 Backend Node/Express para crear planes cinematográficos y generar videos MP4 usando OpenAI.
 
@@ -35,4 +35,4 @@ GET /api/video/:id/content
 2. Sube estos archivos.
 3. Añade OPENAI_API_KEY como variable privada.
 4. Start command: npm start
-5. Pega la URL pública en la web de TokTrend.
+5. Pega la URL pública en la web de TalkTrend.

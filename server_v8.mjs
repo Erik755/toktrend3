@@ -465,7 +465,7 @@ function normalizeScriptData(data, topic) {
     title: `Impacto de ${topic}`.slice(0, 80),
     script: `Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios. ${topic} no es un tema cualquiera: es una puerta para entender cambios reales en nuestro mundo. Si observas con detalle, veras un patron que conecta personas, cultura y decisiones cotidianas. Lo potente es que cada tendencia tiene una historia oculta y una oportunidad de aprendizaje. Quiero que en este video detectes el giro clave, el dato que cambia la perspectiva y la pregunta que te obliga a pensar mas profundo. Dejame tu comentario, aprendo de ti.`,
     description: `${topic} explicado en formato cinematográfico y accionable.`,
-    hashtags: ['#TokTrend', '#IA', '#Cine', '#Tendencias', '#Aprendizaje'],
+    hashtags: ['#TalkTrend', '#IA', '#Cine', '#Tendencias', '#Aprendizaje'],
     shots: [
       `Plano épico de apertura sobre ${topic}`,
       'Detalle en movimiento con profundidad de campo',
@@ -623,7 +623,7 @@ async function fetchOpenversePhoto(query, outputPath) {
   try {
     const { data } = await axios.get('https://api.openverse.org/v1/images/', {
       params: { q: query, page_size: 8, license_type: 'commercial', mature: false },
-      headers: { 'User-Agent': 'toktrend/1.0 (+https://toktrend3.onrender.com)' },
+      headers: { 'User-Agent': 'talktrend/1.0 (+https://toktrend3.onrender.com)' },
       timeout: 15000
     });
     const results = data?.results || [];
@@ -641,7 +641,7 @@ async function fetchOpenversePhoto(query, outputPath) {
 async function fetchWikimediaPhoto(query, outputPath) {
   try {
     const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&prop=imageinfo&iiprop=url|mime&iiurlwidth=720&format=json&gsrlimit=12`;
-    const { data } = await axios.get(url, { timeout: 12000, headers: { 'User-Agent': 'toktrend/1.0 (+https://toktrend3.onrender.com)' } });
+    const { data } = await axios.get(url, { timeout: 12000, headers: { 'User-Agent': 'talktrend/1.0 (+https://toktrend3.onrender.com)' } });
     const pages = Object.values(data?.query?.pages || {});
     const candidates = pages
       .map((p) => p?.imageinfo?.[0])
@@ -1321,8 +1321,8 @@ async function publishSessionToTikTok({ sessionId, title, description }) {
 
   const payload = {
     post_info: {
-      title: (title || 'TokTrend IA').slice(0, 80),
-      description: (description || 'Video generado con TokTrend IA').slice(0, 2200),
+      title: (title || 'TalkTrend IA').slice(0, 80),
+      description: (description || 'Video generado con TalkTrend IA').slice(0, 2200),
       privacy_level: 'SELF_ONLY',
       disable_comment: false,
       auto_add_music: false
@@ -1518,7 +1518,7 @@ app.get('/health', async (req, res) => {
 
   res.json({
     ok: true,
-    version: 'toktrend3-pro-v12-voice-fullvideo',
+    version: 'talktrend3-pro-v12-voice-fullvideo',
     buildMarker: 'natural-voice-no-cut',
     aiModel: aiConfig.model,
     aiBaseURL: aiConfig.baseURL || 'https://api.openai.com/v1',
@@ -1623,8 +1623,8 @@ app.post('/api/agent/update', async (req, res) => {
       if (db) {
         try {
           await db.collection('generated_videos').doc(sessionId).set({
-            topic: script_data?.title || 'TokTrend AI Video',
-            title: script_data?.title || 'TokTrend AI Video',
+            topic: script_data?.title || 'TalkTrend AI Video',
+            title: script_data?.title || 'TalkTrend AI Video',
             createdAt: Date.now()
           });
         } catch (e) { console.error('[Agent Update DB]', e.message); }
@@ -1635,8 +1635,8 @@ app.post('/api/agent/update', async (req, res) => {
       try {
         const publishRes = await axios.post(`http://127.0.0.1:${port}/api/publish`, {
           sessionId,
-          title: script_data?.title || 'TokTrend AI Video',
-          description: script_data?.description || 'Video generado por TokTrend IA autonoma'
+          title: script_data?.title || 'TalkTrend AI Video',
+          description: script_data?.description || 'Video generado por TalkTrend IA autonoma'
         });
         console.log('[Agent Update] Auto-publish requested successfully:', publishRes.data);
       } catch (pubErr) {
@@ -1993,4 +1993,4 @@ app.all('/api/tiktok/webhook', (req, res) => {
 });
 
 app.use((req, res) => res.status(404).json({ ok: false, error: 'Not found.' }));
-app.listen(port, () => console.log(`TokTrend Pro on :${port}`));
+app.listen(port, () => console.log(`TalkTrend Pro on :${port}`));
