@@ -323,8 +323,8 @@ function showScript(sd) {
   $('#sDesc').style.display = 'block';
   $('#sShots').innerHTML = (sd.shots||[]).map((s,i)=>`<div class="shot">⬥ ${i+1}: ${s}</div>`).join('');
   $('#sTags').innerHTML = (sd.hashtags||[]).map(h=>`<span class="tag">${h}</span>`).join('');
-  $('#vtitle').textContent = (sd.title||'').slice(0,34);
-  $('#vmeta').textContent = (sd.hashtags||[]).slice(0,4).join(' ');
+  $('#vtitle').textContent = (sd.title||'').length > 55 ? (sd.title||'').slice(0,52) + '...' : (sd.title||'');
+  $('#vmeta').textContent = (sd.hashtags||[]).slice(0,5).join(' ');
 }
 
 function storeLastVideo(data) {
