@@ -488,11 +488,11 @@ function normalizeScriptData(data, topic) {
 }
 
 async function generateScript(topic, learningContext = '') {
-  const prompt = `Eres estratega viral experto de la TikTok Creator Academy y director cinematográfico.
-Genera SOLO JSON válido para un video de 30-45s en español sobre: "${topic}".
+const prompt = `Eres estratega viral experto de la TikTok Creator Academy y director cinematográfico.
+Genera SOLO JSON válido para un video de 30-45s en español sobre el TEMA PRINCIPAL: "${topic}".
 Aplica estas REGLAS ESTRICTAS para máxima retención e interacción:
 1. TÍTULO Y DESCRIPCIÓN: El "title" debe incluir un "Curiosity Gap" o misterio que incite a ver (ej: "El secreto que nadie te cuenta de...", "Lo que la historia nos ocultó sobre..."). La "description" debe estar optimizada para SEO en TikTok.
-2. ETIQUETAS (HASHTAGS): Usa de 4 a 6 etiquetas estratégicas: 2 muy específicas del nicho, 2 amplias del tema, y siempre incluye #fyp y #parati al final.
+2. ETIQUETAS (HASHTAGS): Usa de 4 a 6 etiquetas estratégicas que describan EXACTAMENTE el TEMA PRINCIPAL ("${topic}"). NO uses etiquetas de otros temas. Incluye siempre #fyp y #parati al final.
 3. GUION Y RETENCIÓN:
  - Gancho fuerte (Hook) en los primeros 3 segundos.
  - Ritmo rápido y con tensión constante.
