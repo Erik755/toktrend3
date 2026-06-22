@@ -1633,14 +1633,16 @@ app.post('/api/agent/update', async (req, res) => {
       // Automatically publish to TikTok!
       console.log('[Agent Update] Triggering local publish...');
       try {
-        await axios.post(`http://127.0.0.1:${port}/api/publish`, {
+        const publishRes = await axios.post(`http://127.0.0.1:${port}/api/publish`, {
           sessionId,
           title: script_data?.title || 'TokTrend AI Video',
           description: script_data?.description || 'Video generado por TokTrend IA autonoma'
         });
-        console.log('[Agent Update] Auto-publish requested successfully');
+        console.log('[Agent Update] Auto-publish requested successfully:', publishRes.data);
       } catch (pubErr) {
-        console.error('[Agent Update Publish Error]', pubErr.message);
+        const detail = pubErr.response?.data ? JSON.stringify(pubErr.response.data) : pubErr.message;
+        console.error('[Agent Update Publish Error]', detail);
+        pushLog(`[Agent Publish Error] ${detail}`);
       }
     }
     
@@ -1881,7 +1883,17 @@ app.post('/api/publish', async (req, res) => {
       isGenerating = false;
     }
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    const errorMsg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    console.error('[Publish Error Detail]', errorMsg, err.stack);
+    pushLog(`[Publish Error] ${errorMsg}`);
+    if (req.body.videoId) {
+      try {
+        await learningAgent.recordPublishResult(req.body.videoId, { status: 'failed', error: errorMsg });
+      } catch (recErr) {
+        console.error('[Publish Error Record Fail]', recErr.message);
+      }
+    }
+    res.status(500).json({ ok: false, error: errorMsg });
   } finally {
     if (global.gc) global.gc();
   }
