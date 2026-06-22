@@ -140,16 +140,6 @@ textarea:focus{border-color:var(--cyan)}
       <div class="prog"><i id="timerBar"></i></div>
       <div class="agent" id="agentBar">Esperando instrucciones…</div>
     </div>
-
-    <!-- Creación manual (movido a la misma columna) -->
-    <div class="card" style="margin-top:16px">
-      <h2>Crear video</h2>
-      <p class="sub">29s · MP4 · Audio IA · Voz dulce · Cualquier tema</p>
-      <div class="label">TEMA DEL VIDEO</div>
-      <textarea id="topic" placeholder="Ej: La noche estrellada de Van Gogh, El Big Bang, Historia de Roma, Secretos de Egipto…" style="min-height:96px"></textarea>
-      <button class="btn-p" id="gen">🎬 Generar Video</button>
-      <div class="prog2"><i id="genBar"></i></div>
-    </div>
   </section>
 
   <!-- COL 3: Preview teléfono -->
@@ -184,15 +174,15 @@ textarea:focus{border-color:var(--cyan)}
     <div id="sTitle"></div><div id="sScript"></div><div id="sShots"></div><div id="sTags"></div><div id="sDesc"></div>
   </div>
 
-  <!-- COL 4: Tendencias -->
+  <!-- COL 4: Crear video -->
   <section>
     <div class="card">
-      <h2>Tendencias</h2>
-      <div class="trend"><div><strong>#HistoriaOculta</strong><span>Misterios y micro-docs</span></div><div class="score">94</div></div>
-      <div class="trend"><div><strong>#IAProductiva</strong><span>Automatización</span></div><div class="score">91</div></div>
-      <div class="trend"><div><strong>#DatoCurioso</strong><span>Retención alta</span></div><div class="score">88</div></div>
-      <div class="trend"><div><strong>#TechTok</strong><span>Novedades tech</span></div><div class="score">84</div></div>
-      <div class="trend"><div><strong>#ArteViral</strong><span>Obras maestras</span></div><div class="score">79</div></div>
+      <h2>Crear video</h2>
+      <p class="sub">29s · MP4 · Audio IA · Voz dulce · Cualquier tema</p>
+      <div class="label">TEMA DEL VIDEO</div>
+      <textarea id="topic" placeholder="Ej: La noche estrellada de Van Gogh, El Big Bang, Historia de Roma, Secretos de Egipto…" style="min-height:96px"></textarea>
+      <button class="btn-p" id="gen">🎬 Generar Video</button>
+      <div class="prog2"><i id="genBar"></i></div>
     </div>
   </section>
 </main>
@@ -231,7 +221,7 @@ async function checkHealth() {
       $('#ttDis').classList.add('hidden');
     }
     await loadAutomationStatus();
-    await loadTrends();
+    // await loadTrends();
   } catch {
     $('#hPill').textContent='✗ Offline'; $('#hPill').className='pill err';
   }
