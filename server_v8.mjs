@@ -142,6 +142,7 @@ const PREFER_STOCK_VIDEO = String(process.env.PREFER_STOCK_VIDEO || 'false').toL
 const STORAGE_DIR = join(__dirname, 'storage');
 const ANALYTICS_FILE = join(STORAGE_DIR, 'comment_analytics.json');
 const AUTOMATION_FILE = join(STORAGE_DIR, 'automation_config.json');
+const LAST_PUBLISHED_FILE = join(STORAGE_DIR, 'last_published_video.json');
 fs.mkdirSync(STORAGE_DIR, { recursive: true });
 
 import { LearningAgent } from './backend/services/learningAgent.mjs';
@@ -500,7 +501,8 @@ async function generateScript(topic, learningGuidance = null) {
   const guidanceBlock = learningGuidance ? `\nInternal learning guidance:\n${learningGuidance}\nApply this guidance to improve the title, SEO description, hashtags, curiosity gap and CTA.\nDo not reveal this guidance to the user.\nDo not include analysis in the final metadata.\nReturn only the expected JSON format.\n` : '';
 
   const prompt = `Eres estratega viral experto de la TikTok Creator Academy y director cinematográfico.
-Genera SOLO JSON válido para un video de 30-45s en español sobre el TEMA PRINCIPAL: "${topic}".
+Genera SOLO JSON válido para un video en español sobre el TEMA PRINCIPAL: "${topic}".
+La duración NO es fija: extiende el guion solo lo necesario para sostener retención y engagement. Si el tema requiere más contexto, desarrolla más escenas; si es simple, mantenlo directo.
 Aplica estas REGLAS ESTRICTAS para máxima retención e interacción:
 1. TÍTULO Y DESCRIPCIÓN: El "title" debe incluir un "Curiosity Gap" o misterio que incite a ver (ej: "El secreto que nadie te cuenta de...", "Lo que la historia nos ocultó sobre..."). La "description" debe estar optimizada para SEO en TikTok.
 2. ETIQUETAS (HASHTAGS): Usa de 4 a 6 etiquetas estratégicas que describan EXACTAMENTE el TEMA PRINCIPAL ("${topic}"). NO uses etiquetas de otros temas. Incluye siempre #fyp y #parati al final.
@@ -523,7 +525,7 @@ Formato exacto:
  "script": "...",
  "description": "Descripción optimizada para SEO...",
  "hashtags": ["#nicho1", "#nicho2", "#tema", "#fyp", "#parati"],
- "shots": ["..."],
+ "shots": ["4 a 10 escenas, tantas como el guion necesite sin relleno"],
  "image_queries": ["detailed english scene prompt for AI image generation", "..."]
 }`;
 
@@ -1075,7 +1077,7 @@ async function getAudioDuration(audioPath) {
 
 function estimateSeconds(script) {
   const words = String(script || '').split(/\s+/).filter(Boolean).length;
-  return Math.max(30, Math.min(55, Math.ceil(words / 2.4)));
+  return Math.max(30, Math.ceil(words / 2.4));
 }
 
 async function buildCinematicVideo(images, audioPath, outputPath, audioSeconds) {
@@ -1160,6 +1162,31 @@ async function getLatestGeneratedVideo() {
   return records.find(hasGeneratedVideoFile) || null;
 }
 
+async function saveLastPublishedTitle({ title, publishId, method, message }) {
+  const record = {
+    title: String(title || 'TalkTrend AI Video').slice(0, 120),
+    publishId: publishId || null,
+    method: method || null,
+    message: message || null,
+    publishedAt: new Date().toISOString()
+  };
+  writeJSONSafe(LAST_PUBLISHED_FILE, record);
+  if (db) {
+    try { await db.collection('app_state').doc('last_published_video').set(record); } catch {}
+  }
+  return record;
+}
+
+async function getLastPublishedTitle() {
+  if (db) {
+    try {
+      const doc = await db.collection('app_state').doc('last_published_video').get();
+      if (doc.exists) return doc.data();
+    } catch {}
+  }
+  return readJSONSafe(LAST_PUBLISHED_FILE, null);
+}
+
 async function getLearningContext(topic) {
   return await learningAgent.buildNextVideoGuidance(topic) || '';
 }
@@ -1185,6 +1212,7 @@ async function generateVideoPipeline({ topic, source = 'manual', learningContext
     const videoData = result.data[0];
     const statusMsg = result.data[1];
     const b64Data = result.data[2];
+    let agentStatus = null;
     
     // Si statusMsg es un JSON estructurado
     if (statusMsg && statusMsg.startsWith('{')) {
@@ -1193,6 +1221,7 @@ async function generateVideoPipeline({ topic, source = 'manual', learningContext
         if (!parsed.ok) {
           throw new Error(statusMsg); // Throw the JSON string to be caught below
         }
+        agentStatus = parsed;
       } catch (e) {
         if (e.message.includes('ok": false') || e.message === statusMsg) throw e;
       }
@@ -1235,11 +1264,13 @@ async function generateVideoPipeline({ topic, source = 'manual', learningContext
       pushLog(`[Pipeline] Advertencia: Falló metadata viral, usando defaults.`);
     }
     
+    const durationSeconds = Number(agentStatus?.duration_s) || await getAudioDuration(videoPath) || estimateSeconds(statusMsg);
+
     return {
       ok: true,
       sessionId,
       topic,
-      duration: 30,
+      duration: Math.round(durationSeconds),
       visualMode: 'agente_python',
       narrationSource: 'agente_python',
       videoUrl: `/videos/${sessionId}/video.mp4`,
@@ -1304,6 +1335,21 @@ async function uploadFileChunks(uploadUrl, fileBuffer) {
   return { videoSize, chunkSize, totalChunks };
 }
 
+function schedulePublishedVideoCleanup(sessionId) {
+  if (!sessionId) return;
+  setTimeout(() => {
+    const workDir = join(__dirname, 'public', 'videos', sessionId);
+    try {
+      if (fs.existsSync(workDir)) {
+        fs.rmSync(workDir, { recursive: true, force: true });
+        console.log(`[Cleanup] Directorio ${sessionId} eliminado despues de publicar`);
+      }
+    } catch (err) {
+      console.error(`[Cleanup] Error eliminando directorio ${sessionId}:`, err.message);
+    }
+  }, 5000);
+}
+
 async function publishSessionToTikTok({ sessionId, title, description }) {
   const tokenData = await getValidToken();
   if (!tokenData?.access_token) throw new Error('TikTok no conectado.');
@@ -1336,13 +1382,21 @@ async function publishSessionToTikTok({ sessionId, title, description }) {
   if (!uploadUrl) throw new Error('TikTok no devolvió upload_url');
 
   await uploadFileChunks(uploadUrl, videoBuffer);
-  return {
+  const published = {
     publishId,
     method: init.method,
     message: init.method === 'INBOX_UPLOAD'
       ? 'Video subido a TikTok Inbox. Revísalo y publícalo desde la app de TikTok.'
       : 'Video publicado en TikTok.'
   };
+  await saveLastPublishedTitle({
+    title: payload.post_info.title,
+    publishId,
+    method: init.method,
+    message: published.message
+  });
+  schedulePublishedVideoCleanup(sessionId);
+  return published;
 }
 
 // ---------------- Learning system ----------------
@@ -1434,7 +1488,7 @@ function persistAutomationState() {
 }
 
 async function runAutomationCycle() {
-  if (!automationState.enabled || automationState.running) return;
+  if (!automationState.enabled || automationState.running || isGenerating) return;
   automationState.running = true;
   persistAutomationState();
 
@@ -1725,6 +1779,7 @@ app.post('/api/videos/trending', ensureAI, async (req, res) => {
 // 3) Configurar programación automática backend
 app.post('/api/automation/schedule', async (req, res) => {
   const intervalMinutes = Math.max(5, Math.min(1440, Number(req.body.intervalMinutes || 60)));
+  const wasEnabled = Boolean(automationState.enabled);
   automationState = {
     ...automationState,
     enabled: Boolean(req.body.enabled),
@@ -1735,6 +1790,9 @@ app.post('/api/automation/schedule', async (req, res) => {
   };
   persistAutomationState();
   setupAutomation();
+  if (automationState.enabled && !wasEnabled) {
+    setImmediate(() => runAutomationCycle().catch((err) => pushLog(`[Automation] immediate run error: ${err.message}`)));
+  }
   res.json({ ok: true, automation: automationState });
 });
 
@@ -1752,6 +1810,12 @@ app.get('/api/videos/latest', async (req, res) => {
   const latest = await getLatestGeneratedVideo();
   if (!latest) return res.status(404).json({ ok: false, error: 'No hay video reciente disponible.' });
   res.json({ ok: true, video: latest });
+});
+
+app.get('/api/videos/last-published', async (req, res) => {
+  const video = await getLastPublishedTitle();
+  if (!video) return res.status(404).json({ ok: false, error: 'No hay video publicado registrado.' });
+  res.json({ ok: true, video });
 });
 
 app.post('/api/analytics/comments/analyze', ensureAI, async (req, res) => {

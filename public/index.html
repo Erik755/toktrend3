@@ -105,7 +105,7 @@ textarea:focus{border-color:var(--cyan)}
 <header>
   <div class="brand">
     <div class="logo">TT</div>
-    <div><h1>TALKTREND <span style="color:#67e8f9">AGENT</span></h1><small>IA autónoma · Video MP4 con audio · 29s</small></div>
+    <div><h1>TALKTREND <span style="color:#67e8f9">AGENT</span></h1><small>IA autónoma · Video MP4 con audio</small></div>
   </div>
   <div class="hdr-right">
     <span class="pill loading" id="hPill">⏳ Conectando…</span>
@@ -139,6 +139,8 @@ textarea:focus{border-color:var(--cyan)}
       <div class="timer" id="timerDisp">--:--</div>
       <div class="timer-sub" id="timerSub">Activa para iniciar</div>
       <div class="prog"><i id="timerBar"></i></div>
+      <div class="label" style="margin-top:10px">ÚLTIMO VIDEO PUBLICADO</div>
+      <div class="agent" id="lastPublishedTitle">Todavía no hay video publicado registrado.</div>
       <div class="agent" id="agentBar">Esperando instrucciones…</div>
     </div>
   </section>
@@ -179,7 +181,7 @@ textarea:focus{border-color:var(--cyan)}
   <section>
     <div class="card">
       <h2>Crear video</h2>
-      <p class="sub">29s · MP4 · Audio IA · Voz dulce · Cualquier tema</p>
+      <p class="sub">MP4 · Audio IA · Voz dulce · Duración flexible</p>
       <div class="label">TEMA DEL VIDEO</div>
       <textarea id="topic" placeholder="Ej: La noche estrellada de Van Gogh, El Big Bang, Historia de Roma, Secretos de Egipto…" style="min-height:96px"></textarea>
       <button class="btn-p" id="gen">🎬 Generar Video</button>
@@ -227,6 +229,7 @@ async function checkHealth() {
       $('#ttDis').classList.add('hidden');
     }
     await loadAutomationStatus();
+    await loadLastPublishedTitle();
     // await loadTrends();
   } catch {
     $('#hPill').textContent='✗ Offline'; $('#hPill').className='pill err';
@@ -266,6 +269,17 @@ async function loadAutomationStatus(){
     }
     if(a.manualTopic) $('#autoTopic').value=a.manualTopic;
     $('#timerSub').textContent = a.nextRunAt ? `Próxima ejecución backend: ${new Date(a.nextRunAt).toLocaleString()}` : 'Activa para iniciar';
+  }catch{}
+}
+
+async function loadLastPublishedTitle(){
+  try{
+    const r=await fetch(`${B}/api/videos/last-published`);
+    if(!r.ok) return;
+    const d=await r.json();
+    if(!d.ok || !d.video) return;
+    const date=d.video.publishedAt ? new Date(d.video.publishedAt).toLocaleString() : '';
+    $('#lastPublishedTitle').textContent = `${d.video.title || 'Sin titulo'}${date ? ' · ' + date : ''}`;
   }catch{}
 }
 
@@ -441,6 +455,7 @@ async function doPub(sd) {
     const d=await r.json();
     if (!d.ok) throw new Error(d.error);
     lastPubId=d.publishId||null;
+    await loadLastPublishedTitle();
     setAgent('¡Publicado! ✓', 100);
     alert(`✅ ${d.message||'Publicado'}
 ID: ${d.publishId||'ok'}`);
@@ -485,6 +500,7 @@ checkHealth();
 restoreLastVideo();
 speechSynthesis.onvoiceschanged=()=>speechSynthesis.getVoices();
 setInterval(loadAutomationStatus, 20000);
+setInterval(loadLastPublishedTitle, 20000);
 </script>
 </body>
 </html>
