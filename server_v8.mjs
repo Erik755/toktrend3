@@ -1487,16 +1487,7 @@ function setupAutomation() {
 setupAutomation();
 
 // ---------------- Endpoints ----------------
-// Endpoint mágico para actualizar URL del agente local
-app.post('/api/agent/update', (req, res) => {
-  if (req.body.url) {
-    dynamicAgentUrl = req.body.url;
-    pushLog(`[Agent] Enlace Mágico conectado exitosamente: ${dynamicAgentUrl}`);
-    res.json({ ok: true, url: dynamicAgentUrl });
-  } else {
-    res.status(400).json({ ok: false, error: 'URL requerida' });
-  }
-});
+// El endpoint /api/agent/update está definido más adelante
 
 // Endpoint de diagnóstico de memoria
 app.get('/api/diagnostics', (req, res) => {
@@ -1577,7 +1568,6 @@ app.get('/api/generate', ensureAI, async (req, res) => {
   }
 });
 
-<<<<<<< Updated upstream
 // 1) Generar video manual (con control de concurrencia)
 app.post('/api/videos/manual', ensureAI, async (req, res) => {
   if (isGenerating) {
@@ -1590,12 +1580,37 @@ app.post('/api/videos/manual', ensureAI, async (req, res) => {
   }
   
   isGenerating = true;
-=======
+
+  try {
+    const topic = String(req.body.topic || '').trim();
+    if (!topic) {
+      isGenerating = false;
+      return res.status(400).json({ ok: false, error: 'topic es obligatorio' });
+    }
+    
+    const learningGuidance = await learningAgent.buildNextVideoGuidance(topic) || '';
+    const strategyGuidance = await failureStrategyAgent.buildStrategyShiftGuidance({ videoHistory: await learningAgent._getCollection('videos') }) || '';
+    const finalGuidance = [learningGuidance, strategyGuidance].filter(Boolean).join('\n\n');
+
+    const result = await generateVideoPipeline({ topic: topic.slice(0, 200), source: 'manual', learningContext: finalGuidance });
+    isGenerating = false;
+    res.json(result);
+  } catch (err) {
+    isGenerating = false;
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // Update from Agent (Gradio)
 app.post('/api/agent/update', async (req, res) => {
   try {
     const { url, b64, script_data } = req.body;
     console.log('[Agent Update] Received notification. URL:', url, 'Has b64:', Boolean(b64));
+    
+    if (url) {
+      dynamicAgentUrl = url;
+      pushLog(`[Agent] Enlace Mágico conectado exitosamente: ${dynamicAgentUrl}`);
+    }
     
     if (b64 && b64.length > 500) {
       const sessionId = 'agent_' + crypto.randomBytes(4).toString('hex');
@@ -1629,63 +1644,14 @@ app.post('/api/agent/update', async (req, res) => {
       }
     }
     
-    res.json({ ok: true, received: true });
+    res.json({ ok: true, received: true, url: dynamicAgentUrl });
   } catch (err) {
     console.error('[Agent Update Error]', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Publish video to TikTok
-app.post('/api/publish', async (req, res) => {
->>>>>>> Stashed changes
-  try {
-    const topic = String(req.body.topic || '').trim();
-    if (!topic) return res.status(400).json({ ok: false, error: 'topic es obligatorio' });
-    
-    const learningGuidance = await learningAgent.buildNextVideoGuidance(topic) || '';
-    const strategyGuidance = await failureStrategyAgent.buildStrategyShiftGuidance({ videoHistory: await learningAgent._getCollection('videos') }) || '';
-    const finalGuidance = [learningGuidance, strategyGuidance].filter(Boolean).join('\n\n');
-
-    const result = await generateVideoPipeline({ topic: topic.slice(0, 200), source: 'manual', learningContext: finalGuidance });
-    
-    // Auto-Publish
-    try {
-      const desc = `${result.scriptData.description} ${(result.scriptData.hashtags || []).join(' ')}`.slice(0, 2200);
-      const publishRes = await publishSessionToTikTok({ sessionId: result.sessionId, title: result.scriptData.title, description: desc });
-      result.published = true;
-      result.publishMessage = publishRes.message;
-      pushLog(`[Manual] Auto-publicado: ${publishRes.message}`);
-    } catch (e) {
-      result.published = false;
-      result.publishError = e.message;
-      pushLog(`[Manual] Error al publicar: ${e.message}`);
-      await failureStrategyAgent.recordFailure({ stage: 'publish', provider: 'tiktok', error_message: e.message, error_type: failureStrategyAgent.classifyFailure(e.message, { stage: 'publish' }) });
-    }
-    
-    // Registrar exito
-    const videoId = await learningAgent.recordGeneratedVideo({ topic, title: result.scriptData?.title, description: result.scriptData?.description, script: result.scriptData?.script, duration: result.duration });
-    await learningAgent.recordRenderResult(videoId, { status: 'success', path: result.videoUrl });
-    if (result.published) {
-      await learningAgent.recordPublishResult(videoId, { status: 'success', message: result.publishMessage });
-      await learningAgent.generateLearningNotes(llmReflectCallback);
-    }
-    else if (result.publishError) await learningAgent.recordPublishResult(videoId, { status: 'failed', error: result.publishError });
-    res.json({ ...result, videoId });
-  } catch (err) {
-    // Registrar fallo
-    const errId = await learningAgent.recordGeneratedVideo({ topic: String(req.body.topic || '') });
-    await learningAgent.recordRenderResult(errId, { status: 'failed', error: err.message });
-    
-    const errType = failureStrategyAgent.classifyFailure(err.message, { stage: 'local_node' });
-    await failureStrategyAgent.recordFailure({ stage: 'local_node', provider: 'local_node', error_message: err.message, error_type: errType, severity: 'high' });
-    
-    res.status(500).json({ ok: false, error: err.message });
-  } finally {
-    isGenerating = false;
-    if (global.gc) global.gc();
-  }
-});
+// El endpoint /api/publish está definido más abajo
 
 // 2) Generar video de trending (con control de concurrencia)
 app.post('/api/videos/trending', ensureAI, async (req, res) => {
@@ -1830,33 +1796,94 @@ app.get('/api/analytics/comments', async (req, res) => {
 
 app.post('/api/publish', async (req, res) => {
   try {
-    const { sessionId, title, description, videoId } = req.body;
-    if (!sessionId) return res.status(400).json({ ok: false, error: 'Missing sessionId' });
-    const published = await publishSessionToTikTok({ sessionId, title, description });
+    const { sessionId, title, description, videoId, topic } = req.body;
     
-    if (videoId) {
-      await learningAgent.recordPublishResult(videoId, { status: 'success', tiktok_video_id: published.data?.video_id || 'unknown' });
-      // Generar nota de aprendizaje asíncronamente
-      setImmediate(() => learningAgent.generateLearningNotes(llmReflectCallback));
-    }
-
-    // Limpiar archivos temporales después de publicar exitosamente
-    setTimeout(() => {
-      const workDir = join(__dirname, 'public', 'videos', sessionId);
-      try {
-        if (fs.existsSync(workDir)) {
-          fs.rmSync(workDir, { recursive: true, force: true });
-          console.log(`[Cleanup] Directorio ${sessionId} eliminado después de publicar`);
-        }
-      } catch (err) {
-        console.error(`[Cleanup] Error eliminando directorio ${sessionId}:`, err.message);
+    if (sessionId) {
+      // 1) Publicar sesión de video existente (local o frontend)
+      const published = await publishSessionToTikTok({ sessionId, title, description });
+      
+      if (videoId) {
+        await learningAgent.recordPublishResult(videoId, { status: 'success', tiktok_video_id: published.data?.video_id || 'unknown' });
+        // Generar nota de aprendizaje asíncronamente
+        setImmediate(() => learningAgent.generateLearningNotes(llmReflectCallback));
       }
-    }, 5000); // 5 segundos después de publicar
+
+      // Limpiar archivos temporales después de publicar exitosamente
+      setTimeout(() => {
+        const workDir = join(__dirname, 'public', 'videos', sessionId);
+        try {
+          if (fs.existsSync(workDir)) {
+            fs.rmSync(workDir, { recursive: true, force: true });
+            console.log(`[Cleanup] Directorio ${sessionId} eliminado después de publicar`);
+          }
+        } catch (err) {
+          console.error(`[Cleanup] Error eliminando directorio ${sessionId}:`, err.message);
+        }
+      }, 5000); // 5 segundos después de publicar
+      
+      return res.json({ ok: true, ...published });
+    }
     
-    res.json({ ok: true, ...published });
+    // 2) Generar y publicar video por tema (Legacy/Manual alternativo)
+    const activeTopic = String(topic || '').trim();
+    if (!activeTopic) {
+      return res.status(400).json({ ok: false, error: 'sessionId o topic es obligatorio' });
+    }
+    
+    if (isGenerating) {
+      return res.status(503).json({ ok: false, error: 'Ya hay un video generándose. Por favor espera 1-2 minutos e intenta de nuevo.' });
+    }
+    
+    isGenerating = true;
+    
+    try {
+      const learningGuidance = await learningAgent.buildNextVideoGuidance(activeTopic) || '';
+      const strategyGuidance = await failureStrategyAgent.buildStrategyShiftGuidance({ videoHistory: await learningAgent._getCollection('videos') }) || '';
+      const finalGuidance = [learningGuidance, strategyGuidance].filter(Boolean).join('\n\n');
+
+      const result = await generateVideoPipeline({ topic: activeTopic.slice(0, 200), source: 'manual', learningContext: finalGuidance });
+      
+      // Auto-Publish
+      try {
+        const desc = `${result.scriptData.description} ${(result.scriptData.hashtags || []).join(' ')}`.slice(0, 2200);
+        const publishRes = await publishSessionToTikTok({ sessionId: result.sessionId, title: result.scriptData.title, description: desc });
+        result.published = true;
+        result.publishMessage = publishRes.message;
+        pushLog(`[Manual] Auto-publicado: ${publishRes.message}`);
+      } catch (e) {
+        result.published = false;
+        result.publishError = e.message;
+        pushLog(`[Manual] Error al publicar: ${e.message}`);
+        await failureStrategyAgent.recordFailure({ stage: 'publish', provider: 'tiktok', error_message: e.message, error_type: failureStrategyAgent.classifyFailure(e.message, { stage: 'publish' }) });
+      }
+      
+      // Registrar exito
+      const newVideoId = await learningAgent.recordGeneratedVideo({ topic: activeTopic, title: result.scriptData?.title, description: result.scriptData?.description, script: result.scriptData?.script, duration: result.duration });
+      await learningAgent.recordRenderResult(newVideoId, { status: 'success', path: result.videoUrl });
+      if (result.published) {
+        await learningAgent.recordPublishResult(newVideoId, { status: 'success', message: result.publishMessage });
+        await learningAgent.generateLearningNotes(llmReflectCallback);
+      } else if (result.publishError) {
+        await learningAgent.recordPublishResult(newVideoId, { status: 'failed', error: result.publishError });
+      }
+      
+      return res.json({ ...result, videoId: newVideoId });
+    } catch (err) {
+      // Registrar fallo
+      const errId = await learningAgent.recordGeneratedVideo({ topic: activeTopic });
+      await learningAgent.recordRenderResult(errId, { status: 'failed', error: err.message });
+      
+      const errType = failureStrategyAgent.classifyFailure(err.message, { stage: 'local_node' });
+      await failureStrategyAgent.recordFailure({ stage: 'local_node', provider: 'local_node', error_message: err.message, error_type: errType, severity: 'high' });
+      
+      return res.status(500).json({ ok: false, error: err.message });
+    } finally {
+      isGenerating = false;
+    }
   } catch (err) {
-    if (req.body.videoId) await learningAgent.recordPublishResult(req.body.videoId, { status: 'failed', error: err.message });
     res.status(500).json({ ok: false, error: err.message });
+  } finally {
+    if (global.gc) global.gc();
   }
 });
 
