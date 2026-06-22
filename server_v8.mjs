@@ -1155,7 +1155,11 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
         videoUrlToDownload = agentUrl.replace(/\/$/, '') + videoUrlToDownload;
     }
     
-    const resp = await axios.get(videoUrlToDownload, { responseType: 'arraybuffer', timeout: 300000 });
+    const resp = await axios.get(videoUrlToDownload, { 
+      responseType: 'arraybuffer', 
+      timeout: 300000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36' }
+    });
     fs.writeFileSync(videoPath, Buffer.from(resp.data));
     
     let viralData = { title: topic, description: `Video sobre ${topic}`, hashtags: ['#viral', '#parati'] };
