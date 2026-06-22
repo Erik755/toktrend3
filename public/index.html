@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TalkTrend</title>
-<link rel="icon" href="/app_icon.png" type="image/png">
+<link rel="icon" href="/app_icon.png?v=2" type="image/png">
 <style>
 :root{--bg:#07070c;--cyan:#06b6d4;--violet:#7213ff;--pink:#e879f9;--ok:#10b981;--bad:#fb7185;--muted:#a1a1aa}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -114,6 +114,12 @@ textarea:focus{border-color:var(--cyan)}
   </div>
 </header>
 
+<div class="top-legal-bar" style="background: rgba(114, 19, 255, 0.15); border-bottom: 1px solid rgba(114, 19, 255, 0.3); padding: 16px 20px; text-align: center; font-weight: bold; position: relative; z-index: 5; display: flex; justify-content: center; gap: 30px; align-items: center; flex-wrap: wrap;">
+  <span style="color: var(--muted); font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em;">Legal:</span>
+  <a href="/terms.html" style="color: #67e8f9; text-decoration: underline; font-size: 18px; font-weight: 700; transition: color 0.2s;" onmouseover="this.style.color='#e879f9'" onmouseout="this.style.color='#67e8f9'">Talktrend terms of service</a>
+  <a href="/privacy.html" style="color: #67e8f9; text-decoration: underline; font-size: 18px; font-weight: 700; transition: color 0.2s;" onmouseover="this.style.color='#e879f9'" onmouseout="this.style.color='#67e8f9'">talktrend privacy policy</a>
+</div>
+
 <main>
   <!-- COL 1: Modo autónomo -->
   <section>
@@ -188,9 +194,9 @@ textarea:focus{border-color:var(--cyan)}
   </section>
 </main>
 
-<footer style="text-align: center; padding: 20px; font-size: 12px; color: var(--muted); border-top: 1px solid rgba(255,255,255,.08); margin-top: 40px; position: relative; z-index: 1;">
-  <a href="/terms.html" style="color: var(--cyan); text-decoration: none; margin-right: 15px;">Terms of Service</a>
-  <a href="/privacy.html" style="color: var(--cyan); text-decoration: none;">Privacy Policy</a>
+<footer style="text-align: center; padding: 25px; font-size: 14px; color: var(--muted); border-top: 1px solid rgba(255,255,255,.08); margin-top: 40px; position: relative; z-index: 1;">
+  <a href="/terms.html" style="color: var(--cyan); text-decoration: underline; margin-right: 25px; font-size: 16px; font-weight: bold;">Talktrend terms of service</a>
+  <a href="/privacy.html" style="color: var(--cyan); text-decoration: underline; font-size: 16px; font-weight: bold;">talktrend privacy policy</a>
 </footer>
 
 <script>
