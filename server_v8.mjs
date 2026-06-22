@@ -145,8 +145,13 @@ const AUTOMATION_FILE = join(STORAGE_DIR, 'automation_config.json');
 fs.mkdirSync(STORAGE_DIR, { recursive: true });
 
 import { LearningAgent } from './backend/services/learningAgent.mjs';
+import { FailureStrategyAgent } from './backend/services/failureStrategyAgent.mjs';
+
 const learningAgent = new LearningAgent(STORAGE_DIR, db);
 learningAgent.initLearningAgent();
+
+const failureStrategyAgent = new FailureStrategyAgent(STORAGE_DIR, db);
+failureStrategyAgent.initFailureStrategyAgent();
 async function llmReflectCallback(promptText) {
   const response = await openai.chat.completions.create({
     model: aiConfig.model,
@@ -492,9 +497,9 @@ function normalizeScriptData(data, topic) {
 }
 
 async function generateScript(topic, learningGuidance = null) {
-const guidanceBlock = learningGuidance ? `\nInternal learning guidance:\n${learningGuidance}\nApply this guidance to improve the title, SEO description, hashtags, curiosity gap and CTA.\nDo not reveal this guidance to the user.\nDo not include analysis in the final metadata.\nReturn only the expected JSON format.\n` : '';
+  const guidanceBlock = learningGuidance ? `\nInternal learning guidance:\n${learningGuidance}\nApply this guidance to improve the title, SEO description, hashtags, curiosity gap and CTA.\nDo not reveal this guidance to the user.\nDo not include analysis in the final metadata.\nReturn only the expected JSON format.\n` : '';
 
-const prompt = `Eres estratega viral experto de la TikTok Creator Academy y director cinematográfico.
+  const prompt = `Eres estratega viral experto de la TikTok Creator Academy y director cinematográfico.
 Genera SOLO JSON válido para un video de 30-45s en español sobre el TEMA PRINCIPAL: "${topic}".
 Aplica estas REGLAS ESTRICTAS para máxima retención e interacción:
 1. TÍTULO Y DESCRIPCIÓN: El "title" debe incluir un "Curiosity Gap" o misterio que incite a ver (ej: "El secreto que nadie te cuenta de...", "Lo que la historia nos ocultó sobre..."). La "description" debe estar optimizada para SEO en TikTok.
@@ -522,14 +527,35 @@ Formato exacto:
  "image_queries": ["detailed english scene prompt for AI image generation", "..."]
 }`;
 
-  const response = await openai.chat.completions.create({
-    model: aiConfig.model,
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.8,
-    max_tokens: 1000
-  });
+  let retries = 0;
+  let success = false;
+  let text = '{}';
+  while (!success && retries < 3) {
+    try {
+      const response = await openai.chat.completions.create({
+        model: aiConfig.model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.8,
+        max_tokens: 1000
+      });
+      text = response.choices?.[0]?.message?.content?.trim() || '{}';
+      success = true;
+      if (retries > 0) await failureStrategyAgent.recordRecovery({ provider: 'groq', strategy_applied: 'retry_same_provider' });
+    } catch (e) {
+      retries++;
+      const errorType = failureStrategyAgent.classifyFailure(e.message, { stage: 'metadata' });
+      await failureStrategyAgent.recordFailure({ stage: 'metadata', provider: 'groq', error_message: e.message, error_type: errorType, attempt: retries, retryable: failureStrategyAgent.isRetryable(errorType, e.message) });
+      const plan = failureStrategyAgent.getRetryPlan(errorType, retries);
+      if (!plan.retry) {
+        console.warn('[Metadata Fallback] Usando metadata local');
+        const fallbackId = await failureStrategyAgent.recordRecovery({ provider: 'groq', strategy_applied: 'metadata_fallback' });
+        const dummy = { title: `Curiosidades sobre ${topic}`, description: `Descubre datos interesantes sobre ${topic}.`, hashtags: ['#curiosidades', '#fyp', '#viral'], script: `Un dato curioso sobre ${topic} que te sorprenderá. ¡Déjame tu opinión en los comentarios!`, shots: [], image_queries: [] };
+        return normalizeScriptData(dummy, topic);
+      }
+      await new Promise(r => setTimeout(r, plan.delay_ms));
+    }
+  }
 
-  let text = response.choices?.[0]?.message?.content?.trim() || '{}';
   text = text.replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
   const parsed = maybeParseJSON(text);
   return normalizeScriptData(parsed, topic);
@@ -1160,7 +1186,21 @@ async function generateVideoPipeline({ topic, source = 'manual', learningContext
     const statusMsg = result.data[1];
     const b64Data = result.data[2];
     
-    pushLog(`[Pipeline] Agente devolvió estado: ${statusMsg}`);
+    // Si statusMsg es un JSON estructurado
+    if (statusMsg && statusMsg.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(statusMsg);
+        if (!parsed.ok) {
+          throw new Error(statusMsg); // Throw the JSON string to be caught below
+        }
+      } catch (e) {
+        if (e.message.includes('ok": false') || e.message === statusMsg) throw e;
+      }
+    } else if (statusMsg && statusMsg.startsWith('Error:')) {
+      throw new Error(statusMsg);
+    }
+    
+    pushLog(`[Pipeline] Agente devolvió estado procesado`);
 
     if (b64Data && b64Data.length > 100) {
       pushLog(`[Pipeline] Video recibido vía WebSocket (${Math.round(b64Data.length / 1024 / 1024)} MB). Guardando...`);
@@ -1542,13 +1582,22 @@ app.post('/api/videos/manual', ensureAI, async (req, res) => {
   if (isGenerating) {
     return res.status(503).json({ ok: false, error: 'Ya hay un video generándose. Por favor espera 1-2 minutos e intenta de nuevo.' });
   }
+
+  const health = await failureStrategyAgent.getHealthStatus();
+  if (health.status === 'critical' || health.status === 'paused') {
+    return res.status(503).json({ ok: false, error: `Modo automático pausado o estado crítico: requiere revisión.` });
+  }
   
   isGenerating = true;
   try {
     const topic = String(req.body.topic || '').trim();
     if (!topic) return res.status(400).json({ ok: false, error: 'topic es obligatorio' });
-    const context = await getLearningContext();
-    const result = await generateVideoPipeline({ topic: topic.slice(0, 200), source: 'manual', learningContext: context });
+    
+    const learningGuidance = await learningAgent.buildNextVideoGuidance(topic) || '';
+    const strategyGuidance = await failureStrategyAgent.buildStrategyShiftGuidance({ videoHistory: await learningAgent._getCollection('videos') }) || '';
+    const finalGuidance = [learningGuidance, strategyGuidance].filter(Boolean).join('\n\n');
+
+    const result = await generateVideoPipeline({ topic: topic.slice(0, 200), source: 'manual', learningContext: finalGuidance });
     
     // Auto-Publish
     try {
@@ -1561,22 +1610,29 @@ app.post('/api/videos/manual', ensureAI, async (req, res) => {
       result.published = false;
       result.publishError = e.message;
       pushLog(`[Manual] Error al publicar: ${e.message}`);
+      await failureStrategyAgent.recordFailure({ stage: 'publish', provider: 'tiktok', error_message: e.message, error_type: failureStrategyAgent.classifyFailure(e.message, { stage: 'publish' }) });
     }
     
     // Registrar exito
-    const videoId = await learningAgent.recordGeneratedVideo({ topic, title: result.scriptData?.title, description: result.scriptData?.description, script: result.scriptData?.script });
+    const videoId = await learningAgent.recordGeneratedVideo({ topic, title: result.scriptData?.title, description: result.scriptData?.description, script: result.scriptData?.script, duration: result.duration });
     await learningAgent.recordRenderResult(videoId, { status: 'success', path: result.videoUrl });
-    if (result.published) await learningAgent.recordPublishResult(videoId, { status: 'success', message: result.publishMessage });
+    if (result.published) {
+      await learningAgent.recordPublishResult(videoId, { status: 'success', message: result.publishMessage });
+      await learningAgent.generateLearningNotes(llmReflectCallback);
+    }
     else if (result.publishError) await learningAgent.recordPublishResult(videoId, { status: 'failed', error: result.publishError });
     res.json({ ...result, videoId });
   } catch (err) {
     // Registrar fallo
     const errId = await learningAgent.recordGeneratedVideo({ topic: String(req.body.topic || '') });
     await learningAgent.recordRenderResult(errId, { status: 'failed', error: err.message });
+    
+    const errType = failureStrategyAgent.classifyFailure(err.message, { stage: 'local_node' });
+    await failureStrategyAgent.recordFailure({ stage: 'local_node', provider: 'local_node', error_message: err.message, error_type: errType, severity: 'high' });
+    
     res.status(500).json({ ok: false, error: err.message });
   } finally {
     isGenerating = false;
-    // Forzar limpieza de memoria después de cada generación
     if (global.gc) global.gc();
   }
 });
@@ -1585,6 +1641,11 @@ app.post('/api/videos/manual', ensureAI, async (req, res) => {
 app.post('/api/videos/trending', ensureAI, async (req, res) => {
   if (isGenerating) {
     return res.status(503).json({ ok: false, error: 'Ya hay un video generándose. Por favor espera 1-2 minutos e intenta de nuevo.' });
+  }
+
+  const health = await failureStrategyAgent.getHealthStatus();
+  if (health.status === 'critical' || health.status === 'paused') {
+    return res.status(503).json({ ok: false, error: `Modo automático pausado o estado crítico: requiere revisión.` });
   }
   
   isGenerating = true;
@@ -1598,8 +1659,11 @@ app.post('/api/videos/trending', ensureAI, async (req, res) => {
     if (automationState.usedTrends.length > 200) automationState.usedTrends.shift();
     persistAutomationState();
     
-    const context = await getLearningContext();
-    const result = await generateVideoPipeline({ topic: selected.topic, source: selected.source || 'trending', learningContext: context });
+    const learningGuidance = await learningAgent.buildNextVideoGuidance(selected.topic) || '';
+    const strategyGuidance = await failureStrategyAgent.buildStrategyShiftGuidance({ videoHistory: await learningAgent._getCollection('videos') }) || '';
+    const finalGuidance = [learningGuidance, strategyGuidance].filter(Boolean).join('\n\n');
+
+    const result = await generateVideoPipeline({ topic: selected.topic, source: selected.source || 'trending', learningContext: finalGuidance });
     
     // Auto-Publish
     try {
@@ -1612,12 +1676,16 @@ app.post('/api/videos/trending', ensureAI, async (req, res) => {
       result.published = false;
       result.publishError = e.message;
       pushLog(`[Trending] Error al publicar: ${e.message}`);
+      await failureStrategyAgent.recordFailure({ stage: 'publish', provider: 'tiktok', error_message: e.message, error_type: failureStrategyAgent.classifyFailure(e.message, { stage: 'publish' }) });
     }
 
     // Registrar exito
-    const videoId = await learningAgent.recordGeneratedVideo({ topic: selected.topic, title: result.scriptData?.title, description: result.scriptData?.description, script: result.scriptData?.script });
+    const videoId = await learningAgent.recordGeneratedVideo({ topic: selected.topic, title: result.scriptData?.title, description: result.scriptData?.description, script: result.scriptData?.script, duration: result.duration });
     await learningAgent.recordRenderResult(videoId, { status: 'success', path: result.videoUrl });
-    if (result.published) await learningAgent.recordPublishResult(videoId, { status: 'success', message: result.publishMessage });
+    if (result.published) {
+      await learningAgent.recordPublishResult(videoId, { status: 'success', message: result.publishMessage });
+      await learningAgent.generateLearningNotes(llmReflectCallback);
+    }
     else if (result.publishError) await learningAgent.recordPublishResult(videoId, { status: 'failed', error: result.publishError });
     
     res.json({ ...result, videoId, trend: selected, trends });
@@ -1625,10 +1693,13 @@ app.post('/api/videos/trending', ensureAI, async (req, res) => {
     // Registrar fallo
     const errId = await learningAgent.recordGeneratedVideo({ topic: 'trending' });
     await learningAgent.recordRenderResult(errId, { status: 'failed', error: err.message });
+    
+    const errType = failureStrategyAgent.classifyFailure(err.message, { stage: 'local_node' });
+    await failureStrategyAgent.recordFailure({ stage: 'local_node', provider: 'local_node', error_message: err.message, error_type: errType, severity: 'high' });
+
     res.status(500).json({ ok: false, error: err.message });
   } finally {
     isGenerating = false;
-    // Forzar limpieza de memoria después de cada generación
     if (global.gc) global.gc();
   }
 });
