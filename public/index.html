@@ -416,8 +416,17 @@ async function runTrendingGenerate(){
   finally{ $('#gen').disabled=false; $('#gen').textContent='🎬 Generar Video'; }
 }
 
-$('#gen').onclick = () => {
-  const t=$('#topic').value.trim();
+$('#gen').onclick = async () => {
+  const t = $('#topic').value.trim();
+  
+  // Limpiar UI vieja
+  $('#vtitle').textContent = 'Generando...';
+  $('#vcap').textContent = 'Por favor espera...';
+  $('#vmeta').textContent = '';
+  $('#art').style.backgroundImage = '';
+  script = null;
+  currentSessionId = null;
+
   if(!t) return runTrendingGenerate();
   return runGenerate(t,false);
 };
