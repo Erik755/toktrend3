@@ -299,7 +299,6 @@ async function getRedditTrending(limit = 10) {
   // Reddit now strictly blocks non-OAuth requests (403 Forbidden). 
   // Disabled to prevent log spam and failed requests.
   return [];
-  }
 }
 
 async function getTikTokTrending(limit = 10) {
