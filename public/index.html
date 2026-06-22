@@ -203,7 +203,9 @@ const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const lastVideoKey = 'toktrend3-last-video-v1';
 
-let session = null, slides = [], script = null, slideInt = null, slideIdx = 0;
+let session = null;
+let currentVideoId = null;
+let slides = [], script = null, slideInt = null, slideIdx = 0;
 let playing = false, lastPubId = null, vidCount = 0;
 let autoOn = false;
 
@@ -384,7 +386,7 @@ async function runGenerate(topic, autoPub=false) {
     const r = await fetch(`${B}/api/videos/manual`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic})});
     const d = await r.json();
     if (!d.ok) throw new Error(d.error||'Error');
-    session=d.sessionId; slides=d.slides||[]; script=d.scriptData;
+    session=d.sessionId; slides=d.slides||[]; script=d.scriptData; currentVideoId=d.videoId;
     showScript(d.scriptData);
     startSlides();
     vidCount++;
@@ -405,7 +407,7 @@ async function runTrendingGenerate(){
     const r=await fetch(`${B}/api/videos/trending`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
     const d=await r.json();
     if(!d.ok) throw new Error(d.error||'Error');
-    session=d.sessionId; slides=d.slides||[]; script=d.scriptData;
+    session=d.sessionId; slides=d.slides||[]; script=d.scriptData; currentVideoId=d.videoId;
     showScript(d.scriptData); startSlides();
     $('#topic').value=d.topic||'';
     setAgent(`Video trend generado: ${d.topic}`);
@@ -425,7 +427,7 @@ $('#gen').onclick = async () => {
   $('#vmeta').textContent = '';
   $('#art').style.backgroundImage = '';
   script = null;
-  currentSessionId = null;
+  currentVideoId = null;
 
   if(!t) return runTrendingGenerate();
   return runGenerate(t,false);
@@ -439,7 +441,7 @@ async function doPub(sd) {
   try {
     const title=(sd?.title||'TokTrend IA').slice(0,80);
     const desc=`${sd?.description||''} ${(sd?.hashtags||[]).join(' ')}`.trim().slice(0,2200);
-    const r=await fetch(`${B}/api/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:session,title,description:desc})});
+    const r=await fetch(`${B}/api/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:session,title,description:desc,videoId:typeof currentVideoId !== 'undefined' ? currentVideoId : null})});
     const d=await r.json();
     if (!d.ok) throw new Error(d.error);
     lastPubId=d.publishId||null;

@@ -144,9 +144,9 @@ const ANALYTICS_FILE = join(STORAGE_DIR, 'comment_analytics.json');
 const AUTOMATION_FILE = join(STORAGE_DIR, 'automation_config.json');
 fs.mkdirSync(STORAGE_DIR, { recursive: true });
 
-import { LearningAgent } from './LearningAgent.mjs';
-const learningAgent = new LearningAgent(STORAGE_DIR);
-
+import { LearningAgent } from './backend/services/learningAgent.mjs';
+const learningAgent = new LearningAgent(STORAGE_DIR, db);
+learningAgent.initLearningAgent();
 async function llmReflectCallback(promptText) {
   const response = await openai.chat.completions.create({
     model: aiConfig.model,
@@ -491,7 +491,9 @@ function normalizeScriptData(data, topic) {
   return merged;
 }
 
-async function generateScript(topic, learningContext = '') {
+async function generateScript(topic, learningGuidance = null) {
+const guidanceBlock = learningGuidance ? `\nInternal learning guidance:\n${learningGuidance}\nApply this guidance to improve the title, SEO description, hashtags, curiosity gap and CTA.\nDo not reveal this guidance to the user.\nDo not include analysis in the final metadata.\nReturn only the expected JSON format.\n` : '';
+
 const prompt = `Eres estratega viral experto de la TikTok Creator Academy y director cinematográfico.
 Genera SOLO JSON válido para un video de 30-45s en español sobre el TEMA PRINCIPAL: "${topic}".
 Aplica estas REGLAS ESTRICTAS para máxima retención e interacción:
@@ -502,8 +504,7 @@ Aplica estas REGLAS ESTRICTAS para máxima retención e interacción:
  - Ritmo rápido y con tensión constante.
  - ESTRATEGIA DE INTERACCIÓN: Justo antes del cierre, haz una pregunta abierta muy específica, controversial o personal para forzar el debate en los comentarios (ej: "Y tú, ¿qué hubieras hecho en esta situación?", "Si tuvieras que elegir, ¿con cuál te quedas?").
  - Empieza el script obligatoriamente con: "Soy una inteligencia artificial autonoma que aprende leyendo vuestros comentarios."
- - Termina el script obligatoriamente con: "Dejame tu comentario, aprendo de ti."
-Usa este contexto de aprendizaje (si existe): ${learningContext || 'sin contexto'}
+ - Termina el script obligatoriamente con: "Dejame tu comentario, aprendo de ti."${guidanceBlock}
 
 IMPORTANTE sobre "image_queries": son prompts EN INGLÉS para un GENERADOR DE IMÁGENES POR IA
 (tipo DALL·E / Stable Diffusion). Cada uno debe describir una ESCENA cinematográfica concreta y
@@ -1133,12 +1134,10 @@ async function getLatestGeneratedVideo() {
   return records.find(hasGeneratedVideoFile) || null;
 }
 
-async function getLearningContext() {
-  const analytics = readJSONSafe(ANALYTICS_FILE, { insights: [] });
-  const baseContext = (analytics.insights || []).slice(0, 8).join(' | ');
-  const agentContext = learningAgent.getLearningContext();
-  return `${baseContext}\n\n${agentContext}`.trim();
+async function getLearningContext(topic) {
+  return await learningAgent.buildNextVideoGuidance(topic) || '';
 }
+
 
 async function generateVideoPipeline({ topic, source = 'manual', learningContext = '' }) {
   const sessionId = crypto.randomBytes(8).toString('hex');
@@ -1155,7 +1154,7 @@ async function generateVideoPipeline({ topic, source = 'manual', learningContext
     pushLog(`[Pipeline] Llamando al Agente Local de Gradio para el tema: "${topic}"...`);
     
     const client = await Client.connect(agentUrl);
-    const result = await client.predict("/generate_video", [topic, apiKey]);
+    const result = await client.predict("/generate_video", [topic, apiKey, learningContext]);
     
     const videoData = result.data[0];
     const statusMsg = result.data[1];
@@ -1565,12 +1564,15 @@ app.post('/api/videos/manual', ensureAI, async (req, res) => {
     }
     
     // Registrar exito
-    learningAgent.recordVideoData({ ...result, renderStatus: 'success', publishStatus: result.published ? 'success' : 'error' }, llmReflectCallback, pushLog);
-    
-    res.json(result);
+    const videoId = await learningAgent.recordGeneratedVideo({ topic, title: result.scriptData?.title, description: result.scriptData?.description, script: result.scriptData?.script });
+    await learningAgent.recordRenderResult(videoId, { status: 'success', path: result.videoUrl });
+    if (result.published) await learningAgent.recordPublishResult(videoId, { status: 'success', message: result.publishMessage });
+    else if (result.publishError) await learningAgent.recordPublishResult(videoId, { status: 'failed', error: result.publishError });
+    res.json({ ...result, videoId });
   } catch (err) {
     // Registrar fallo
-    learningAgent.recordVideoData({ sessionId: 'err_'+Date.now(), topic: String(req.body.topic || ''), renderStatus: 'error', error: err.message }, llmReflectCallback, pushLog);
+    const errId = await learningAgent.recordGeneratedVideo({ topic: String(req.body.topic || '') });
+    await learningAgent.recordRenderResult(errId, { status: 'failed', error: err.message });
     res.status(500).json({ ok: false, error: err.message });
   } finally {
     isGenerating = false;
@@ -1613,12 +1615,16 @@ app.post('/api/videos/trending', ensureAI, async (req, res) => {
     }
 
     // Registrar exito
-    learningAgent.recordVideoData({ ...result, renderStatus: 'success', publishStatus: result.published ? 'success' : 'error' }, llmReflectCallback, pushLog);
-
-    res.json({ ...result, trend: selected, trends });
+    const videoId = await learningAgent.recordGeneratedVideo({ topic: selected.topic, title: result.scriptData?.title, description: result.scriptData?.description, script: result.scriptData?.script });
+    await learningAgent.recordRenderResult(videoId, { status: 'success', path: result.videoUrl });
+    if (result.published) await learningAgent.recordPublishResult(videoId, { status: 'success', message: result.publishMessage });
+    else if (result.publishError) await learningAgent.recordPublishResult(videoId, { status: 'failed', error: result.publishError });
+    
+    res.json({ ...result, videoId, trend: selected, trends });
   } catch (err) {
     // Registrar fallo
-    learningAgent.recordVideoData({ sessionId: 'err_'+Date.now(), topic: 'trending', renderStatus: 'error', error: err.message }, llmReflectCallback, pushLog);
+    const errId = await learningAgent.recordGeneratedVideo({ topic: 'trending' });
+    await learningAgent.recordRenderResult(errId, { status: 'failed', error: err.message });
     res.status(500).json({ ok: false, error: err.message });
   } finally {
     isGenerating = false;
@@ -1703,10 +1709,16 @@ app.get('/api/analytics/comments', async (req, res) => {
 
 app.post('/api/publish', async (req, res) => {
   try {
-    const { sessionId, title, description } = req.body;
+    const { sessionId, title, description, videoId } = req.body;
     if (!sessionId) return res.status(400).json({ ok: false, error: 'Missing sessionId' });
     const published = await publishSessionToTikTok({ sessionId, title, description });
     
+    if (videoId) {
+      await learningAgent.recordPublishResult(videoId, { status: 'success', tiktok_video_id: published.data?.video_id || 'unknown' });
+      // Generar nota de aprendizaje asíncronamente
+      setImmediate(() => learningAgent.generateLearningNotes(llmReflectCallback));
+    }
+
     // Limpiar archivos temporales después de publicar exitosamente
     setTimeout(() => {
       const workDir = join(__dirname, 'public', 'videos', sessionId);
@@ -1722,6 +1734,7 @@ app.post('/api/publish', async (req, res) => {
     
     res.json({ ok: true, ...published });
   } catch (err) {
+    if (req.body.videoId) await learningAgent.recordPublishResult(req.body.videoId, { status: 'failed', error: err.message });
     res.status(500).json({ ok: false, error: err.message });
   }
 });
