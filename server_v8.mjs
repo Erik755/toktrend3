@@ -144,6 +144,19 @@ const ANALYTICS_FILE = join(STORAGE_DIR, 'comment_analytics.json');
 const AUTOMATION_FILE = join(STORAGE_DIR, 'automation_config.json');
 fs.mkdirSync(STORAGE_DIR, { recursive: true });
 
+import { LearningAgent } from './LearningAgent.mjs';
+const learningAgent = new LearningAgent(STORAGE_DIR);
+
+async function llmReflectCallback(promptText) {
+  const response = await openai.chat.completions.create({
+    model: aiConfig.model,
+    messages: [{ role: 'user', content: promptText }],
+    temperature: 0.7,
+    max_tokens: 200
+  });
+  return response.choices?.[0]?.message?.content?.trim() || '';
+}
+
 // ---------------- Dynamic Agent URL ----------------
 let dynamicAgentUrl = process.env.GRADIO_AGENT_URL || "http://127.0.0.1:7860/";
 
@@ -1122,10 +1135,12 @@ async function getLatestGeneratedVideo() {
 
 async function getLearningContext() {
   const analytics = readJSONSafe(ANALYTICS_FILE, { insights: [] });
-  return (analytics.insights || []).slice(0, 8).join(' | ');
+  const baseContext = (analytics.insights || []).slice(0, 8).join(' | ');
+  const agentContext = learningAgent.getLearningContext();
+  return `${baseContext}\n\n${agentContext}`.trim();
 }
 
-async function generateVideoPipeline({ topic, source = 'manual' }) {
+async function generateVideoPipeline({ topic, source = 'manual', learningContext = '' }) {
   const sessionId = crypto.randomBytes(8).toString('hex');
   const workDir = join(__dirname, 'public', 'videos', sessionId);
   fs.mkdirSync(workDir, { recursive: true });
@@ -1165,7 +1180,7 @@ async function generateVideoPipeline({ topic, source = 'manual' }) {
     let viralData = { title: topic, description: `Video sobre ${topic}`, hashtags: ['#viral', '#parati'] };
     try {
       pushLog(`[Pipeline] Generando metadatos virales (Creator Academy) en la nube...`);
-      viralData = await generateScript(topic);
+      viralData = await generateScript(topic, learningContext);
     } catch (e) {
       pushLog(`[Pipeline] Advertencia: Falló metadata viral, usando defaults.`);
     }
@@ -1522,7 +1537,8 @@ app.post('/api/videos/manual', ensureAI, async (req, res) => {
   try {
     const topic = String(req.body.topic || '').trim();
     if (!topic) return res.status(400).json({ ok: false, error: 'topic es obligatorio' });
-    const result = await generateVideoPipeline({ topic: topic.slice(0, 200), source: 'manual' });
+    const context = await getLearningContext();
+    const result = await generateVideoPipeline({ topic: topic.slice(0, 200), source: 'manual', learningContext: context });
     
     // Auto-Publish
     try {
@@ -1537,8 +1553,13 @@ app.post('/api/videos/manual', ensureAI, async (req, res) => {
       pushLog(`[Manual] Error al publicar: ${e.message}`);
     }
     
+    // Registrar exito
+    learningAgent.recordVideoData({ ...result, renderStatus: 'success', publishStatus: result.published ? 'success' : 'error' }, llmReflectCallback, pushLog);
+    
     res.json(result);
   } catch (err) {
+    // Registrar fallo
+    learningAgent.recordVideoData({ sessionId: 'err_'+Date.now(), topic: String(req.body.topic || ''), renderStatus: 'error', error: err.message }, llmReflectCallback, pushLog);
     res.status(500).json({ ok: false, error: err.message });
   } finally {
     isGenerating = false;
@@ -1564,7 +1585,8 @@ app.post('/api/videos/trending', ensureAI, async (req, res) => {
     if (automationState.usedTrends.length > 200) automationState.usedTrends.shift();
     persistAutomationState();
     
-    const result = await generateVideoPipeline({ topic: selected.topic, source: selected.source || 'trending' });
+    const context = await getLearningContext();
+    const result = await generateVideoPipeline({ topic: selected.topic, source: selected.source || 'trending', learningContext: context });
     
     // Auto-Publish
     try {
@@ -1579,8 +1601,13 @@ app.post('/api/videos/trending', ensureAI, async (req, res) => {
       pushLog(`[Trending] Error al publicar: ${e.message}`);
     }
 
+    // Registrar exito
+    learningAgent.recordVideoData({ ...result, renderStatus: 'success', publishStatus: result.published ? 'success' : 'error' }, llmReflectCallback, pushLog);
+
     res.json({ ...result, trend: selected, trends });
   } catch (err) {
+    // Registrar fallo
+    learningAgent.recordVideoData({ sessionId: 'err_'+Date.now(), topic: 'trending', renderStatus: 'error', error: err.message }, llmReflectCallback, pushLog);
     res.status(500).json({ ok: false, error: err.message });
   } finally {
     isGenerating = false;
