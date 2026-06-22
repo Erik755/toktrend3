@@ -297,7 +297,7 @@ async function getGoogleTrending(limit = 10) {
 
 async function getRedditTrending(limit = 10) {
   try {
-    const { data } = await axios.get('https://www.reddit.com/r/popular/hot.json?limit=30', { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36' } });
+    const { data } = await axios.get('https://www.reddit.com/r/popular/hot.json?limit=30', { timeout: 12000, headers: { 'User-Agent': 'node:toktrend_bot:v1.0 (by /u/erik_toktrend)' } });
     const children = data?.data?.children || [];
     return children.slice(0, limit).map((item) => ({
       topic: item?.data?.title?.slice(0, 120),
